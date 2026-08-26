@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>STILL</title>
+  <meta name="description" content="STILL helps you focus when you can and feel what you must.">
+  <link rel="icon" type="image/png" href="./assets/still-app-icon.png">
+  <link rel="apple-touch-icon" href="./assets/still-app-icon.png">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="shell" aria-label="STILL app">
+    <section class="phone-wrap" aria-label="STILL">
+      <div class="phone">
+        <header class="topbar">
+          <button class="icon-btn" id="settingsBtn" aria-label="Settings" title="Settings">
+            <span class="icon-settings" aria-hidden="true"></span>
+          </button>
+          <div>
+            <p class="tiny-label">Day <span id="dayCount">1</span></p>
+            <strong>STILL</strong>
+          </div>
+          <button class="icon-btn" id="shareBtn" aria-label="Open collection" title="Open collection">
+            <span class="icon-collection" aria-hidden="true"></span>
+          </button>
+        </header>
+
+        <div id="screen" class="screen" tabindex="-1"></div>
+
+        <nav class="tabbar" aria-label="App navigation">
+          <button class="tab active" data-tab="home" aria-label="Home">
+            <span class="tab-icon home-icon"></span>
+            <span>Home</span>
+          </button>
+          <button class="tab" data-tab="focus" aria-label="Focus">
+            <span class="tab-icon focus-icon"></span>
+            <span>Focus</span>
+          </button>
+          <button class="tab" data-tab="checkin" aria-label="Check-in">
+            <span class="tab-icon check-icon"></span>
+            <span>Check-in</span>
+          </button>
+          <button class="tab" data-tab="habits" aria-label="Habits">
+            <span class="tab-icon habit-icon"></span>
+            <span>Habits</span>
+          </button>
+          <button class="tab" data-tab="society" aria-label="Society">
+            <span class="tab-icon society-icon"></span>
+            <span>Society</span>
+          </button>
+        </nav>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
