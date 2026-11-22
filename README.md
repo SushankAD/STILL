@@ -1,34 +1,36 @@
 # STILL
 
-STILL is a static mobile-first app UI for proof-based focus, habits, check-ins, anonymous society posts, and a date-wise photo collection.
+STILL is a mobile-first app for proof-based focus, habits, reflection, and quiet progress.
+
+The first development phase is a React + TypeScript application built with Vite. The original static prototype remains in `outputs/still-10-ui/` as a design reference.
 
 ## Run Locally
 
 ```bash
-python3 -m http.server 8790 --directory outputs/still-10-ui
+npm install --prefix web
+npm start
 ```
 
-Then open `http://127.0.0.1:8790`.
-
-No install step is required. The app uses plain HTML, CSS, and JavaScript with `localStorage`.
-
-If your machine has Node/npm, `npm start` runs the same server command.
+Then open the local URL printed by Vite, usually `http://localhost:5173`.
 
 ## Check
 
 ```bash
 npm run check
+npm run build
 ```
 
-This validates the JavaScript syntax. It requires Node on your PATH.
+These commands type-check and build the React app.
 
 ## Source
 
-- `outputs/still-10-ui/index.html` is the app shell.
-- `outputs/still-10-ui/app.js` contains state, rendering, rewards, proof uploads, collection, and society interactions.
-- `outputs/still-10-ui/styles.css` contains the complete UI styling.
-- `outputs/still-10-ui/assets/` contains the current STILL logo and social assets.
+- `web/src/App.tsx` contains the React Phase 1 interface.
+- `web/src/index.css` contains the global browser reset.
+- `outputs/still-10-ui/` contains the original static prototype.
+- `reference/still-app.jsx` contains the earlier React UI concept.
 
 ## Product Status
 
-This is ready for team review as a polished static product UI. Before paid subscriptions or real users, replace `localStorage` with a backend, add authentication, create real photo storage, moderate anonymous society posts, and define privacy/safety policies.
+Phase 1 provides a working React, TypeScript, and Vite foundation.
+
+Future phases will add browser persistence, Supabase authentication and data storage, photo uploads, PWA installation, notifications, moderation, and native packaging.

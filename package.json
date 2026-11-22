@@ -2,9 +2,12 @@
   "name": "still-app",
   "version": "0.1.0",
   "private": true,
-  "description": "Static STILL app UI.",
+  "description": "STILL — a mobile-first React app for focus, habits, reflection, and quiet progress.",
   "scripts": {
-    "start": "python3 -m http.server 8790 --directory outputs/still-10-ui",
-    "check": "node --check outputs/still-10-ui/app.js"
+    "dev": "npm --prefix web run dev",
+    "start": "npm --prefix web run dev",
+    "build": "npm --prefix web run build",
+    "preview": "npm --prefix web run preview",
+    "check": "npm --prefix web run build"
   }
 }
