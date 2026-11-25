@@ -1,20 +1,31 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { playCompletionRingtone, unlockAudio } from "./lib/chime";
+import {
+  abandonFocusSession,
+  completeFocusSession,
+  fetchTotalFocusMinutes,
+  startFocusSession,
+} from "./lib/focus-api";
+import {
+  fetchCheckInCount,
+  fetchTodayCheckIn,
+  localDateString,
+  saveCheckInRecord,
+} from "./lib/checkin-api";
+import {
+  archiveHabit as archiveCloudHabit,
+  createHabit as createCloudHabit,
+  fetchHabits,
+  recordHabitCompletion,
+  removeTodayHabitCompletion,
+} from "./lib/habit-api";
+import type { HabitDraft, HabitRecord } from "./lib/habit-api";
 import "./still.css";
 
 type Tab = "home" | "focus" | "checkin" | "habits" | "society" | "collection" | "settings";
 type DayState = "steady" | "heavy" | "tiny";
-type Habit = {
-  id: number;
-  icon: string;
-  title: string;
-  area: string;
-  difficulty: "easy" | "medium" | "hard";
-  baseRoots: number;
-  streak: number;
-  lastCompletedDay: number | null;
-  lastReward: number;
-  done: boolean;
-};
+type Habit = HabitRecord;
+type HabitLoadStatus = "loading" | "ready" | "error";
 type Post = {
   id: number;
   icon: string;
@@ -37,8 +48,13 @@ type State = {
   load: number;
   selectedDepth: "light" | "medium" | "deep";
   focusActive: boolean;
+  focusPaused: boolean;
   focusProgress: number;
   focusProofPending: boolean;
+  focusTotalSeconds: number;
+  focusRemainingSeconds: number;
+  focusEndsAt: number | null;
+  focusSessionId: string | null;
   intention: string;
   supportMode: string | null;
   lastReflection: string;
@@ -47,6 +63,7 @@ type State = {
   habits: Habit[];
   societyPosts: Post[];
   hardWinDraft: string;
+  lastCheckInDate?: string;
 };
 
 const STORAGE_KEY = "still_final_app_state_v1";
@@ -73,13 +90,19 @@ const defaultState: State = {
   load: 62,
   selectedDepth: "medium",
   focusActive: false,
+  focusPaused: false,
   focusProgress: 0,
   focusProofPending: false,
+  focusTotalSeconds: 3000,
+  focusRemainingSeconds: 3000,
+  focusEndsAt: null,
+  focusSessionId: null,
   intention: "Study without checking my phone",
   supportMode: null,
   lastReflection: "You do not need to fix the whole day. Name one small action and stay with it for ten quiet minutes.",
   draftIcon: "🌱",
   draftDifficulty: "easy",
+  lastCheckInDate: "",
   habits: [
     { id: 1, icon: "🏃", title: "Move my body", area: "Body", difficulty: "medium", baseRoots: 2, streak: 0, lastCompletedDay: null, lastReward: 0, done: false },
     { id: 2, icon: "📚", title: "Read 30 pages", area: "Mind", difficulty: "hard", baseRoots: 3, streak: 0, lastCompletedDay: null, lastReward: 0, done: false },
@@ -131,22 +154,50 @@ function loadState(storageKey: string): State {
   }
 }
 
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "object" && error !== null && "message" in error && typeof error.message === "string") {
+    return error.message;
+  }
+  return "Could not complete the action. Please try again.";
+}
+
 function StillApp({ userId, profileName, demoMode = false, onSaveProfileName, onSignOut }: StillAppProps) {
   const storageKey = userId ? `${STORAGE_KEY}:${userId}` : STORAGE_KEY;
   const [state, setState] = useState<State>(() => loadState(storageKey));
   const [toast, setToast] = useState("");
   const [draftName, setDraftName] = useState(state.userName || profileName || "");
   const [newHabit, setNewHabit] = useState("");
-  const [timerTick, setTimerTick] = useState(0);
+  const [clockTick, setClockTick] = useState(() => Date.now());
+  const [habitStatus, setHabitStatus] = useState<HabitLoadStatus>(userId ? "loading" : "ready");
+  const [habitError, setHabitError] = useState("");
+  const [habitRetry, setHabitRetry] = useState(0);
+  const [savingHabit, setSavingHabit] = useState(false);
+  const [busyHabitIds, setBusyHabitIds] = useState<Set<Habit["id"]>>(new Set());
+  const [savingCheckIn, setSavingCheckIn] = useState(false);
 
-  const save = (patch: Partial<State>) => setState((current) => {
+  const save = useCallback((patch: Partial<State>) => setState((current) => {
     const next = { ...current, ...patch };
     localStorage.setItem(storageKey, JSON.stringify(next));
     return next;
-  });
-  const notify = (message: string) => {
+  }), [storageKey]);
+  const notify = useCallback((message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(""), 2100);
+  }, []);
+  const markHabitBusy = (id: Habit["id"], busy: boolean) => {
+    setBusyHabitIds((current) => {
+      const next = new Set(current);
+      if (busy) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+  const reloadHabits = () => {
+    if (!userId) return;
+    setHabitError("");
+    setHabitStatus("loading");
+    setHabitRetry((attempt) => attempt + 1);
   };
   const persistProfileName = async (name: string) => {
     if (!onSaveProfileName) return true;
@@ -175,24 +226,142 @@ function StillApp({ userId, profileName, demoMode = false, onSaveProfileName, on
   }, [state.theme]);
 
   useEffect(() => {
-    if (!state.focusActive) return;
-    const timer = window.setInterval(() => setTimerTick((value) => value + 1), 1000);
-    return () => window.clearInterval(timer);
-  }, [state.focusActive]);
+    if (!userId) return;
+
+    let active = true;
+    fetchHabits(userId)
+      .then((habits) => {
+        if (!active) return;
+        setState((current) => {
+          const next = { ...current, habits };
+          localStorage.setItem(storageKey, JSON.stringify(next));
+          return next;
+        });
+        setHabitError("");
+        setHabitStatus("ready");
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setHabitError(errorMessage(error));
+        setHabitStatus("error");
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [userId, storageKey, habitRetry]);
 
   useEffect(() => {
-    if (!state.focusActive) return;
-    if (timerTick > 0 && timerTick % 27 === 0) {
-      const next = Math.min(100, state.focusProgress + 2);
-      save({ focusProgress: next });
-      if (next >= 100) save({ focusActive: false, focusProofPending: true });
-    }
-  }, [timerTick]);
+    if (!userId) return;
+
+    let active = true;
+    Promise.all([
+      fetchTodayCheckIn(userId),
+      fetchCheckInCount(userId),
+      fetchTotalFocusMinutes(userId),
+    ])
+      .then(([todayCheckIn, count, totalFocusMin]) => {
+        if (!active) return;
+        setState((current) => {
+          const patch: Partial<State> = {
+            checkins: Math.max(current.checkins, count),
+            focusMinutes: Math.max(current.focusMinutes, totalFocusMin),
+          };
+          if (todayCheckIn) {
+            patch.dailyState = todayCheckIn.dayState;
+            patch.mood = todayCheckIn.mood;
+            patch.load = todayCheckIn.mentalLoad;
+            patch.lastReflection = todayCheckIn.reflection;
+            patch.lastCheckInDate = todayCheckIn.checkInDate;
+          }
+          const next = { ...current, ...patch };
+          localStorage.setItem(storageKey, JSON.stringify(next));
+          return next;
+        });
+      })
+      .catch((error: unknown) => {
+        console.error("Could not load user data:", error);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [userId, storageKey]);
+
+  useEffect(() => {
+    if (!state.focusActive || !state.focusEndsAt) return;
+    const interval = window.setInterval(() => {
+      const currentNow = Date.now();
+      if (currentNow >= state.focusEndsAt!) {
+        playCompletionRingtone();
+        save({
+          focusActive: false,
+          focusPaused: false,
+          focusEndsAt: null,
+          focusRemainingSeconds: 0,
+          focusProgress: 100,
+          focusProofPending: true,
+        });
+        notify("Focus timer completed! Time for proof.");
+      } else {
+        setClockTick(currentNow);
+      }
+    }, 250);
+    return () => window.clearInterval(interval);
+  }, [state.focusActive, state.focusEndsAt, save, notify]);
 
   const stage = stages.find((item) => state.day <= item.max) || stages[stages.length - 1];
-  const pending = state.habits.filter((habit) => !habit.done);
+  const pending = habitStatus === "ready" ? state.habits.filter((habit) => !habit.done) : [];
   const firstName = (state.userName || "friend").trim().split(/\s+/)[0];
   const rootPct = Math.min(100, Math.round((state.roots % 500) / 500 * 100));
+
+  const today = localDateString();
+  const todayCheckedIn = state.lastCheckInDate === today;
+
+  const handleSaveCheckIn = async () => {
+    if (savingCheckIn) return;
+
+    const isUpdate = todayCheckedIn;
+    setSavingCheckIn(true);
+
+    if (userId) {
+      try {
+        const saved = await saveCheckInRecord(userId, {
+          dayState: state.dailyState,
+          mood: state.mood,
+          mentalLoad: state.load,
+          reflection: state.lastReflection || "",
+        });
+
+        const nextCheckins = isUpdate ? state.checkins : state.checkins + 1;
+        const nextRoots = isUpdate ? state.roots : state.roots + 12;
+        save({
+          dailyState: saved.dayState,
+          mood: saved.mood,
+          load: saved.mentalLoad,
+          lastReflection: saved.reflection,
+          lastCheckInDate: saved.checkInDate,
+          checkins: nextCheckins,
+          roots: nextRoots,
+        });
+        notify(isUpdate ? "Check-in updated." : "Check-in saved. +12 roots.");
+      } catch (error) {
+        notify(errorMessage(error) || "Could not save check-in.");
+      } finally {
+        setSavingCheckIn(false);
+      }
+    } else {
+      const nextCheckins = isUpdate ? state.checkins : state.checkins + 1;
+      const nextRoots = isUpdate ? state.roots : state.roots + 12;
+      save({
+        lastCheckInDate: today,
+        checkins: nextCheckins,
+        roots: nextRoots,
+      });
+      notify(isUpdate ? "Check-in updated." : "Check-in saved. +12 roots.");
+      setSavingCheckIn(false);
+    }
+  };
 
   const enterApp = async () => {
     const name = draftName.trim();
@@ -212,28 +381,116 @@ function StillApp({ userId, profileName, demoMode = false, onSaveProfileName, on
         <span className="habit-reward">{habit.done ? `Earned +${habit.lastReward || habit.baseRoots} today` : `Next +${habit.baseRoots} roots`}</span>
       </div>
       <div className="habit-actions">
-        {!habit.done && <button className="small-btn" onClick={() => completeHabit(habit)}>✓</button>}
-        {habit.done && <button className="icon-mini-btn vanish-btn" onClick={() => save({ habits: state.habits.map((item) => item.id === habit.id ? { ...item, done: false } : item) })}>×</button>}
-        <button className="icon-mini-btn delete-habit-btn" onClick={() => save({ habits: state.habits.filter((item) => item.id !== habit.id) })}><span className="icon-trash"></span></button>
+        {!habit.done && <button className="small-btn" aria-label={`Complete ${habit.title}`} disabled={busyHabitIds.has(habit.id)} onClick={() => { void completeHabit(habit); }}>✓</button>}
+        {habit.done && <button className="icon-mini-btn vanish-btn" aria-label={`Undo ${habit.title}`} disabled={busyHabitIds.has(habit.id)} onClick={() => { void undoHabitCompletion(habit); }}>×</button>}
+        <button className="icon-mini-btn delete-habit-btn" aria-label={`Remove ${habit.title}`} disabled={busyHabitIds.has(habit.id)} onClick={() => { void archiveHabit(habit); }}><span className="icon-trash"></span></button>
       </div>
     </div>
   );
 
-  const completeHabit = (habit: Habit) => {
-    save({
-      roots: state.roots + habit.baseRoots,
-      habits: state.habits.map((item) => item.id === habit.id ? { ...item, done: true, lastCompletedDay: state.day, lastReward: habit.baseRoots, streak: item.streak + 1 } : item)
-    });
-    notify(`Habit complete. +${habit.baseRoots} roots.`);
+  const addHabitRecord = async (habit: HabitDraft) => {
+    if (savingHabit) return false;
+    setSavingHabit(true);
+    setHabitError("");
+    try {
+      const created = userId
+        ? await createCloudHabit(userId, habit)
+        : { ...habit, id: Date.now(), streak: 0, lastCompletedDay: null, lastReward: 0, done: false };
+      save({ habits: [...state.habits, created] });
+      notify("Habit added.");
+      return true;
+    } catch (error: unknown) {
+      const message = errorMessage(error);
+      setHabitError(message);
+      notify(message);
+      return false;
+    } finally {
+      setSavingHabit(false);
+    }
+  };
+
+  const completeHabit = async (habit: Habit) => {
+    if (busyHabitIds.has(habit.id) || habit.done) return;
+    markHabitBusy(habit.id, true);
+    setHabitError("");
+    try {
+      const completedOn = userId
+        ? (await recordHabitCompletion(userId, String(habit.id), habit.baseRoots)).completed_on
+        : state.day;
+      save({
+        roots: state.roots + habit.baseRoots,
+        habits: state.habits.map((item) => item.id === habit.id
+          ? {
+            ...item,
+            done: true,
+            lastCompletedDay: completedOn,
+            lastReward: habit.baseRoots,
+            streak: item.streak + 1,
+          }
+          : item),
+      });
+      notify(`Habit complete. +${habit.baseRoots} roots.`);
+    } catch (error: unknown) {
+      const message = errorMessage(error);
+      setHabitError(message);
+      notify(message);
+      if (userId && message.includes("already complete")) reloadHabits();
+    } finally {
+      markHabitBusy(habit.id, false);
+    }
+  };
+
+  const undoHabitCompletion = async (habit: Habit) => {
+    if (busyHabitIds.has(habit.id)) return;
+    markHabitBusy(habit.id, true);
+    setHabitError("");
+    try {
+      if (userId) {
+        await removeTodayHabitCompletion(userId, String(habit.id));
+        const habits = await fetchHabits(userId);
+        save({ roots: Math.max(0, state.roots - habit.lastReward), habits });
+      } else {
+        save({ habits: state.habits.map((item) => item.id === habit.id ? { ...item, done: false } : item) });
+      }
+    } catch (error: unknown) {
+      const message = errorMessage(error);
+      setHabitError(message);
+      notify(message);
+    } finally {
+      markHabitBusy(habit.id, false);
+    }
+  };
+
+  const archiveHabit = async (habit: Habit) => {
+    if (busyHabitIds.has(habit.id)) return;
+    markHabitBusy(habit.id, true);
+    setHabitError("");
+    try {
+      if (userId) await archiveCloudHabit(userId, String(habit.id));
+      save({ habits: state.habits.filter((item) => item.id !== habit.id) });
+      notify("Habit removed.");
+    } catch (error: unknown) {
+      const message = errorMessage(error);
+      setHabitError(message);
+      notify(message);
+    } finally {
+      markHabitBusy(habit.id, false);
+    }
   };
 
   const addHabit = () => {
     const title = newHabit.trim();
     if (!title) return notify("Name the habit first.");
-    const roots = state.draftDifficulty === "hard" ? 3 : state.draftDifficulty === "medium" ? 2 : 1;
-    save({ habits: [...state.habits, { id: Date.now(), icon: state.draftIcon, title, area: "Custom", difficulty: state.draftDifficulty, baseRoots: roots, streak: 0, lastCompletedDay: null, lastReward: 0, done: false }] });
-    setNewHabit("");
-    notify("Habit added.");
+    const baseRoots = state.draftDifficulty === "hard" ? 3 : state.draftDifficulty === "medium" ? 2 : 1;
+    void addHabitRecord({
+      icon: state.draftIcon,
+      title,
+      area: "Custom",
+      difficulty: state.draftDifficulty,
+      baseRoots,
+    }).then((added) => {
+      if (added) setNewHabit("");
+    });
   };
 
   const reactToPost = (post: Post, reaction: "like" | "love" | "same" | "proud") => {
@@ -249,7 +506,141 @@ function StillApp({ userId, profileName, demoMode = false, onSaveProfileName, on
   };
 
   const depth = depths[state.selectedDepth];
-  const remaining = Math.max(0, depth.minutes - Math.round(depth.minutes * state.focusProgress / 100));
+  const totalSeconds = state.focusTotalSeconds || (depth.minutes * 60);
+  let remainingSeconds = totalSeconds;
+  if (state.focusActive && state.focusEndsAt) {
+    remainingSeconds = Math.max(0, Math.ceil((state.focusEndsAt - clockTick) / 1000));
+  } else if (state.focusPaused) {
+    remainingSeconds = Math.max(0, state.focusRemainingSeconds ?? totalSeconds);
+  }
+  const progressPct = totalSeconds > 0
+    ? Math.min(100, Math.max(0, Math.round(((totalSeconds - remainingSeconds) / totalSeconds) * 100)))
+    : 0;
+  const timerMinutes = Math.floor(remainingSeconds / 60);
+  const timerSeconds = remainingSeconds % 60;
+  const formattedTimer = `${String(timerMinutes).padStart(2, "0")}:${String(timerSeconds).padStart(2, "0")}`;
+
+  const handleStartFocus = async () => {
+    unlockAudio();
+    const totalSec = depth.minutes * 60;
+    const endsAt = Date.now() + totalSec * 1000;
+
+    let sessionId: string | null = null;
+    if (userId) {
+      try {
+        const record = await startFocusSession(
+          userId,
+          state.intention,
+          state.selectedDepth,
+          depth.minutes
+        );
+        sessionId = record.id;
+      } catch (error) {
+        console.error("Could not record focus session start:", error);
+      }
+    }
+
+    save({
+      focusActive: true,
+      focusPaused: false,
+      focusTotalSeconds: totalSec,
+      focusRemainingSeconds: totalSec,
+      focusEndsAt: endsAt,
+      focusProgress: 0,
+      focusProofPending: false,
+      focusSessionId: sessionId,
+    });
+    notify(`Focus started: ${depth.minutes} minutes.`);
+  };
+
+  const handlePauseFocus = () => {
+    const currentRemaining = state.focusEndsAt
+      ? Math.max(0, Math.ceil((state.focusEndsAt - Date.now()) / 1000))
+      : (state.focusRemainingSeconds || depth.minutes * 60);
+    save({
+      focusActive: false,
+      focusPaused: true,
+      focusEndsAt: null,
+      focusRemainingSeconds: currentRemaining,
+    });
+    notify("Focus paused.");
+  };
+
+  const handleResumeFocus = () => {
+    unlockAudio();
+    const totalSec = depth.minutes * 60;
+    const currentRemaining = (typeof state.focusRemainingSeconds === "number" && state.focusRemainingSeconds > 0)
+      ? state.focusRemainingSeconds
+      : totalSec;
+    const endsAt = Date.now() + currentRemaining * 1000;
+    save({
+      focusActive: true,
+      focusPaused: false,
+      focusTotalSeconds: state.focusTotalSeconds || totalSec,
+      focusEndsAt: endsAt,
+    });
+    notify("Focus resumed.");
+  };
+
+  const handleCompleteFocus = () => {
+    playCompletionRingtone();
+    save({
+      focusActive: false,
+      focusPaused: false,
+      focusEndsAt: null,
+      focusRemainingSeconds: 0,
+      focusProgress: 100,
+      focusProofPending: true,
+    });
+    notify("Focus completed! Submit your proof.");
+  };
+
+  const handleSubmitProof = async () => {
+    const earnedRoots = depth.roots;
+    const earnedMinutes = depth.minutes;
+
+    if (userId && state.focusSessionId) {
+      try {
+        await completeFocusSession(userId, state.focusSessionId, earnedRoots);
+      } catch (error) {
+        console.error("Could not record focus completion:", error);
+      }
+    }
+
+    save({
+      roots: state.roots + earnedRoots,
+      focusMinutes: state.focusMinutes + earnedMinutes,
+      focusProgress: 0,
+      focusProofPending: false,
+      focusActive: false,
+      focusPaused: false,
+      focusEndsAt: null,
+      focusRemainingSeconds: 0,
+      focusSessionId: null,
+    });
+    notify(`Proof accepted. +${earnedRoots} roots.`);
+  };
+
+  const handleAbandonFocus = async () => {
+    if (userId && state.focusSessionId) {
+      try {
+        await abandonFocusSession(userId, state.focusSessionId);
+      } catch (error) {
+        console.error("Could not record focus session abandon:", error);
+      }
+    }
+
+    save({
+      focusActive: false,
+      focusPaused: false,
+      focusEndsAt: null,
+      focusRemainingSeconds: 0,
+      focusProgress: 0,
+      focusProofPending: false,
+      focusSessionId: null,
+    });
+    notify("Focus ended without reward.");
+  };
 
   return (
     <main className="shell" aria-label="STILL app">
@@ -300,7 +691,9 @@ function StillApp({ userId, profileName, demoMode = false, onSaveProfileName, on
                 <article className="society-teaser" onClick={() => setTab("collection")}><div className="emoji-badge amber-icon">📸</div><div><strong>Collection</strong><p>Keep proof photos that become part of your dated progress gallery.</p></div></article>
                 <article className="society-teaser" onClick={() => setTab("society")}><div className="emoji-badge blue-icon">✨</div><div><strong>Small hard wins</strong><p>Read quiet posts from people who kept going in difficult moments.</p></div></article>
                 <div className="section-title"><h2>Today</h2><p>{pending.length} open</p></div>
-                {pending.slice(0, 3).map(habitRow)}
+                {habitStatus === "loading" && <div className="message-card" role="status"><strong>Loading habits…</strong></div>}
+                {habitStatus === "error" && <div className="message-card" role="alert"><strong>Could not load habits.</strong><p>{habitError}</p><button className="ghost-btn" onClick={reloadHabits}>Retry</button></div>}
+                {habitStatus === "ready" && pending.slice(0, 3).map(habitRow)}
               </section>
             ) : state.tab === "checkin" ? (
               <section>
@@ -312,18 +705,21 @@ function StillApp({ userId, profileName, demoMode = false, onSaveProfileName, on
                 </div>
                 <div className="slider-wrap"><label><span>Mood</span><b>{state.mood}/100</b></label><input type="range" min="0" max="100" value={state.mood} onChange={(event) => save({ mood: Number(event.target.value) })} /></div>
                 <div className="slider-wrap"><label><span>Mental load</span><b>{state.load}/100</b></label><input type="range" min="0" max="100" value={state.load} onChange={(event) => save({ load: Number(event.target.value) })} /></div>
-                <textarea className="textarea" placeholder="What feels heavy right now?" />
-                <button className="primary-btn" style={{ marginTop: 12 }} onClick={() => { save({ checkins: state.checkins + 1, roots: state.roots + 12 }); notify("Check-in saved. +12 roots."); }}>Save check-in</button>
+                <textarea className="textarea" maxLength={2000} placeholder="What feels heavy right now?" value={state.lastReflection} onChange={(event) => save({ lastReflection: event.target.value })} />
+                <button className="primary-btn" style={{ marginTop: 12 }} disabled={savingCheckIn} onClick={handleSaveCheckIn}>{savingCheckIn ? "Saving…" : todayCheckedIn ? "Update check-in" : "Save check-in"}</button>
                 <div className="message-card" style={{ marginTop: 12 }}><strong>Suggested next step</strong><p>Make the next move visible. Choose one small action and stay with it for ten quiet minutes.</p></div>
               </section>
             ) : state.tab === "habits" ? (
               <section>
                 <div className="section-title" style={{ marginTop: 0 }}><h2>Habits</h2><p>Set today's list.</p></div>
                 <div className="message-card"><strong>Add or remove habits before you begin.</strong><p>Tap ✓ after doing the habit. It earns roots and grows your repeat streak.</p></div>
-                <div>{state.habits.map(habitRow)}</div>
+                {habitStatus === "loading" && <div className="message-card" role="status"><strong>Loading your habits…</strong></div>}
+                {habitStatus === "error" && <div className="message-card" role="alert"><strong>Could not load habits.</strong><p>{habitError}</p><button className="ghost-btn" onClick={reloadHabits}>Retry</button></div>}
+                {habitStatus === "ready" && state.habits.length === 0 && <div className="message-card"><strong>No habits yet.</strong><p>Add a practice below. It will be saved to your STILL account.</p></div>}
+                {habitStatus === "ready" && <div>{state.habits.map(habitRow)}</div>}
                 <div className="section-title"><h2>Quick add</h2><p>Emoji helps</p></div>
                 <div className="template-grid">
-                  {habitTemplates.map((template) => <button className="template-btn" key={template.title} onClick={() => save({ habits: [...state.habits, { id: Date.now(), ...template, streak: 0, lastCompletedDay: null, lastReward: 0, done: false }] })}><span>{template.icon}</span><strong>{template.title}</strong><small>{template.difficulty} · +{template.baseRoots}</small></button>)}
+                  {habitTemplates.map((template) => <button className="template-btn" key={template.title} disabled={savingHabit} onClick={() => { void addHabitRecord(template); }}><span>{template.icon}</span><strong>{template.title}</strong><small>{template.difficulty} · +{template.baseRoots}</small></button>)}
                 </div>
                 <div className="section-title"><h2>Add practice</h2><p>Keep it tiny</p></div>
                 <div className="icon-picker">{["🌱", "🌿", "💧", "🌙", "📚", "📓", "🏃", "🧘", "☕", "🚫", "✨"].map((icon) => <button key={icon} className={`icon-choice ${state.draftIcon === icon ? "selected" : ""}`} onClick={() => save({ draftIcon: icon })}>{icon}</button>)}</div>
@@ -331,16 +727,64 @@ function StillApp({ userId, profileName, demoMode = false, onSaveProfileName, on
                   {(["easy", "medium", "hard"] as const).map((difficulty) => <button key={difficulty} className={`difficulty-choice ${state.draftDifficulty === difficulty ? "selected" : ""}`} onClick={() => save({ draftDifficulty: difficulty })}><strong>{difficulty[0].toUpperCase() + difficulty.slice(1)}</strong><span>+{difficulty === "hard" ? 3 : difficulty === "medium" ? 2 : 1} root</span></button>)}
                 </div>
                 <input className="input" maxLength={42} value={newHabit} onChange={(event) => setNewHabit(event.target.value)} placeholder="Example: ten-minute reset walk" />
-                <button className="primary-btn" style={{ marginTop: 10 }} onClick={addHabit}>Add habit</button>
+                <button className="primary-btn" style={{ marginTop: 10 }} disabled={savingHabit} onClick={addHabit}>{savingHabit ? "Saving…" : "Add habit"}</button>
               </section>
             ) : state.tab === "focus" ? (
               <section>
-                {state.focusActive ? (
-                  <><div className="timer-face" style={{ "--timer": `${state.focusProgress}%` } as React.CSSProperties}><div className="timer-inner"><b>{String(remaining).padStart(2, "0")}:00</b><span>{depth.label} session</span></div></div><div className="message-card"><strong>{state.intention}</strong><p>Stay with the named task until the timer ends or you consciously stop.</p></div><div className="button-row" style={{ marginTop: 14 }}><button className="ghost-btn" onClick={() => save({ focusActive: false })}>Pause</button><button className="primary-btn" onClick={() => save({ focusActive: false, focusProofPending: true })}>Complete</button></div><button className="danger-btn" style={{ width: "100%", marginTop: 10 }} onClick={() => save({ focusActive: false, focusProgress: 0, focusProofPending: false })}>End without reward</button></>
+                {state.focusActive || state.focusPaused ? (
+                  <>
+                    <div className="timer-face" style={{ "--timer": `${progressPct}%` } as React.CSSProperties}>
+                      <div className="timer-inner">
+                        <b>{formattedTimer}</b>
+                        <span>{depth.label} session{state.focusPaused ? " (paused)" : ""}</span>
+                      </div>
+                    </div>
+                    <div className="message-card">
+                      <strong>{state.intention}</strong>
+                      <p>{state.focusPaused ? "Session is currently paused. Tap Resume to continue." : "Stay with the named task until the timer ends or you consciously stop."}</p>
+                    </div>
+                    <div className="button-row" style={{ marginTop: 14 }}>
+                      {state.focusPaused ? (
+                        <button className="primary-btn" onClick={handleResumeFocus}>Resume</button>
+                      ) : (
+                        <button className="ghost-btn" onClick={handlePauseFocus}>Pause</button>
+                      )}
+                      <button className="primary-btn" onClick={handleCompleteFocus}>Complete</button>
+                    </div>
+                    <button className="danger-btn" style={{ width: "100%", marginTop: 10 }} onClick={handleAbandonFocus}>End without reward</button>
+                    <div style={{ textAlign: "center", marginTop: 10 }}>
+                      <button type="button" className="ghost-btn" style={{ fontSize: 12, opacity: 0.8 }} onClick={() => { unlockAudio(); playCompletionRingtone(); notify("Playing ringtone chime 🔔"); }}>🔔 Test ringtone chime</button>
+                    </div>
+                  </>
                 ) : state.focusProofPending ? (
-                  <><div className="section-title" style={{ marginTop: 0 }}><h2>Proof</h2><p>Earn the roots.</p></div><div className="proof-card"><div className="emoji-badge mint-icon">📷</div><strong>Upload a quick proof photo.</strong><p>A notebook page, workout screen, tidy desk, book page, or finished task is enough.</p></div><button className="primary-btn" onClick={() => { save({ roots: state.roots + depth.roots, focusProgress: 0, focusProofPending: false, focusMinutes: state.focusMinutes + depth.minutes }); notify(`Proof accepted. +${depth.roots} roots.`); }}>Submit proof & earn +{depth.roots} roots</button></>
+                  <>
+                    <div className="section-title" style={{ marginTop: 0 }}><h2>Proof</h2><p>Earn the roots.</p></div>
+                    <div className="proof-card"><div className="emoji-badge mint-icon">📷</div><strong>Upload a quick proof photo.</strong><p>A notebook page, workout screen, tidy desk, book page, or finished task is enough.</p></div>
+                    <button className="primary-btn" onClick={handleSubmitProof}>Submit proof & earn +{depth.roots} roots</button>
+                  </>
                 ) : (
-                  <><div className="section-title" style={{ marginTop: 0 }}><h2>Focus</h2><p>One task, one block.</p></div><div className="focus-intro"><strong>Focus is for days with enough steadiness to begin.</strong><p>Choose the smallest block your body can actually meet.</p></div><div className="ritual-steps"><div><b>1</b><span>Choose energy</span></div><div><b>2</b><span>Name one task</span></div><div><b>3</b><span>Stay until done</span></div></div><div className="section-title"><h2>Energy today</h2><p>Pick honestly.</p></div><div className="focus-depth-grid">{(Object.entries(depths) as [keyof typeof depths, typeof depths.light][]).map(([id, item]) => <button key={id} className={`focus-choice ${state.selectedDepth === id ? "selected" : ""}`} onClick={() => save({ selectedDepth: id })}><span className="depth-icon">{item.icon}</span><strong>{item.label}</strong><span className="depth-meta">{item.minutes}m</span><span className="depth-roots">+{item.roots} roots</span></button>)}</div><div className="section-title"><h2>One visible task</h2><p>No vague goals.</p></div><input className="input" maxLength={72} value={state.intention} onChange={(event) => save({ intention: event.target.value })} /><button className="primary-btn" style={{ marginTop: 14 }} onClick={() => { save({ focusActive: true, focusProgress: 0, focusProofPending: false }); notify("Focus started."); }}>Start {depth.minutes} minutes</button></>
+                  <>
+                    <div className="section-title" style={{ marginTop: 0 }}><h2>Focus</h2><p>One task, one block.</p></div>
+                    <div className="focus-intro"><strong>Focus is for days with enough steadiness to begin.</strong><p>Choose the smallest block your body can actually meet.</p></div>
+                    <div className="ritual-steps"><div><b>1</b><span>Choose energy</span></div><div><b>2</b><span>Name one task</span></div><div><b>3</b><span>Stay until done</span></div></div>
+                    <div className="section-title"><h2>Energy today</h2><p>Pick honestly.</p></div>
+                    <div className="focus-depth-grid">
+                      {(Object.entries(depths) as [keyof typeof depths, typeof depths.light][]).map(([id, item]) => (
+                        <button key={id} className={`focus-choice ${state.selectedDepth === id ? "selected" : ""}`} onClick={() => save({ selectedDepth: id })}>
+                          <span className="depth-icon">{item.icon}</span>
+                          <strong>{item.label}</strong>
+                          <span className="depth-meta">{item.minutes}m</span>
+                          <span className="depth-roots">+{item.roots} roots</span>
+                        </button>
+                      ))}
+                    </div>
+                    <div className="section-title"><h2>One visible task</h2><p>No vague goals.</p></div>
+                    <input className="input" maxLength={72} value={state.intention} onChange={(event) => save({ intention: event.target.value })} />
+                    <button className="primary-btn" style={{ marginTop: 14 }} onClick={handleStartFocus}>Start {depth.minutes} minutes</button>
+                    <div style={{ textAlign: "center", marginTop: 10 }}>
+                      <button type="button" className="ghost-btn" style={{ fontSize: 12, opacity: 0.8 }} onClick={() => { unlockAudio(); playCompletionRingtone(); notify("Playing ringtone chime 🔔"); }}>🔔 Test ringtone chime</button>
+                    </div>
+                  </>
                 )}
               </section>
             ) : state.tab === "society" ? (

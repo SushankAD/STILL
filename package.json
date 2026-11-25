@@ -9,5 +9,8 @@
     "build": "npm --prefix web run build",
     "preview": "npm --prefix web run preview",
     "check": "npm --prefix web run build"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.119.2"
   }
 }
