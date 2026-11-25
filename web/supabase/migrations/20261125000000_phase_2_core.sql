@@ -124,6 +124,16 @@ create trigger auth_user_created_profile
 after insert on auth.users
 for each row execute function public.create_profile_for_new_user();
 
+insert into public.profiles (id, display_name)
+select
+  auth_user.id,
+  coalesce(
+    nullif(left(trim(auth_user.raw_user_meta_data ->> 'display_name'), 24), ''),
+    'friend'
+  )
+from auth.users as auth_user
+on conflict (id) do nothing;
+
 alter table public.profiles enable row level security;
 alter table public.habits enable row level security;
 alter table public.habit_completions enable row level security;
@@ -145,7 +155,7 @@ on public.habits for all to authenticated
 using ((select auth.uid()) = user_id)
 with check ((select auth.uid()) = user_id);
 
-create policy "Users can manage their habit completions"
+create poliicy "Users can manage their habit completions"
 on public.habit_completions for all to authenticated
 using ((select auth.uid()) = user_id)
 with check (

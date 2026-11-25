@@ -252,6 +252,103 @@ h1 {
   padding: 18px 18px 28px;
 }
 
+.demo-mode-label {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+.auth-phone {
+  grid-template-rows: 86px 1fr;
+}
+
+.auth-screen {
+  padding: 18px 22px 28px;
+}
+
+.auth-onboarding {
+  min-height: 260px;
+}
+
+.auth-onboarding .app-mark {
+  width: 104px;
+  height: 104px;
+  border-radius: 24px;
+  margin-bottom: 16px;
+}
+
+.auth-onboarding h1 {
+  font-size: 30px;
+}
+
+.auth-mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 0 0 16px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.auth-mode-switch button {
+  min-height: 40px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.auth-mode-switch button.selected {
+  border-color: var(--line-strong);
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.auth-form {
+  display: grid;
+  gap: 13px;
+}
+
+.auth-field {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.auth-message {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.auth-message.error {
+  border-color: rgba(255, 122, 122, 0.35);
+  color: var(--danger);
+}
+
+.auth-privacy {
+  margin: 16px 0 0;
+  color: var(--dim);
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: center;
+}
+
 .screen::-webkit-scrollbar {
   width: 4px;
 }

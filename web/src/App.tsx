@@ -51,6 +51,14 @@ type State = {
 
 const STORAGE_KEY = "still_final_app_state_v1";
 
+type StillAppProps = {
+  userId?: string;
+  profileName?: string;
+  demoMode?: boolean;
+  onSaveProfileName?: (name: string) => Promise<void>;
+  onSignOut?: () => Promise<void>;
+};
+
 const defaultState: State = {
   onboarded: false,
   tab: "home",
@@ -114,30 +122,48 @@ const habitTemplates = [
   { icon: "🚫", title: "No social scrolling", area: "Focus", difficulty: "hard" as const, baseRoots: 3 }
 ];
 
-function loadState(): State {
+function loadState(storageKey: string): State {
   try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+    const saved = JSON.parse(localStorage.getItem(storageKey) || "null");
     return saved ? { ...defaultState, ...saved, habits: saved.habits || defaultState.habits, societyPosts: saved.societyPosts || defaultState.societyPosts } : defaultState;
   } catch {
     return defaultState;
   }
 }
 
-function StillApp() {
-  const [state, setState] = useState<State>(loadState);
+function StillApp({ userId, profileName, demoMode = false, onSaveProfileName, onSignOut }: StillAppProps) {
+  const storageKey = userId ? `${STORAGE_KEY}:${userId}` : STORAGE_KEY;
+  const [state, setState] = useState<State>(() => loadState(storageKey));
   const [toast, setToast] = useState("");
-  const [draftName, setDraftName] = useState(state.userName);
+  const [draftName, setDraftName] = useState(state.userName || profileName || "");
   const [newHabit, setNewHabit] = useState("");
   const [timerTick, setTimerTick] = useState(0);
 
   const save = (patch: Partial<State>) => setState((current) => {
     const next = { ...current, ...patch };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    localStorage.setItem(storageKey, JSON.stringify(next));
     return next;
   });
   const notify = (message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(""), 2100);
+  };
+  const persistProfileName = async (name: string) => {
+    if (!onSaveProfileName) return true;
+    try {
+      await onSaveProfileName(name);
+      return true;
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Could not save your profile.");
+      return false;
+    }
+  };
+  const signOut = async () => {
+    try {
+      await onSignOut?.();
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Could not sign out.");
+    }
   };
   const setTab = (tab: Tab) => {
     if (!state.onboarded) return;
@@ -168,9 +194,10 @@ function StillApp() {
   const firstName = (state.userName || "friend").trim().split(/\s+/)[0];
   const rootPct = Math.min(100, Math.round((state.roots % 500) / 500 * 100));
 
-  const enterApp = () => {
+  const enterApp = async () => {
     const name = draftName.trim();
     if (!name) return notify("Add your name first.");
+    if (!(await persistProfileName(name))) return;
     const tab: Tab = state.dailyState === "heavy" ? "checkin" : state.dailyState === "tiny" ? "habits" : "home";
     save({ onboarded: true, tab, userName: name });
     notify(`Welcome to STILL, ${name.split(/\s+/)[0]}.`);
@@ -235,6 +262,7 @@ function StillApp() {
           </header>
 
           <div className="screen" tabIndex={-1}>
+            {demoMode && <p className="demo-mode-label">Local demo — saved on this browser only.</p>}
             {!state.onboarded ? (
               <section>
                 <div className="onboarding">
@@ -330,8 +358,9 @@ function StillApp() {
             ) : state.tab === "settings" ? (
               <section>
                 <div className="section-title" style={{ marginTop: 0 }}><h2>Settings</h2><p>Make STILL yours.</p></div>
-                <section className="settings-card"><strong>Profile</strong><p>Your name personalizes private screens.</p><input className="input" maxLength={24} defaultValue={state.userName} onChange={(event) => save({ userName: event.target.value })} /></section>
+                <section className="settings-card"><strong>Profile</strong><p>Your name personalizes private screens.</p><input className="input" maxLength={24} value={state.userName} onChange={(event) => save({ userName: event.target.value })} onBlur={(event) => { const name = event.currentTarget.value.trim(); if (name) void persistProfileName(name); }} /></section>
                 <section className="settings-card"><strong>Appearance</strong><p>Choose the display mood.</p><div className="mode-grid"><button className={`mode-choice ${state.theme === "dark" ? "selected" : ""}`} onClick={() => save({ theme: "dark" })}><span>🌙</span><strong>Dark mode</strong><small>Low-light, calm, focused.</small></button><button className={`mode-choice ${state.theme === "normal" ? "selected" : ""}`} onClick={() => save({ theme: "normal" })}><span>☀️</span><strong>Normal mode</strong><small>Brighter, softer daytime UI.</small></button></div></section>
+                {onSignOut && <button className="ghost-btn" style={{ width: "100%", marginTop: 12 }} onClick={() => { void signOut(); }}>Sign out</button>}
               </section>
             ) : (
               <section><div className="section-title" style={{ marginTop: 0 }}><h2>Collection</h2><p>Your proof gallery.</p></div><div className="message-card"><strong>Nothing collected yet.</strong><p>Complete focus sessions and habits, then proof photos will appear here.</p></div></section>

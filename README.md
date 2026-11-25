@@ -37,13 +37,14 @@ Phase 2 is adding the full-stack foundation while keeping the existing interface
 - Supabase provides authentication, a Postgres database, and private photo storage. Its generated REST API is the client/server boundary for the web app.
 - `web/supabase/migrations/` contains the first schema migration for profiles, habits, completions, check-ins, focus sessions, and proof-photo metadata. Row-level security policies restrict private rows and files to their owner.
 
-The current app screens still use the Phase 1 browser-local demo state. Authentication and syncing those screens with Supabase are the next implementation slice; setting environment variables alone does not switch the screens to cloud data.
+Account creation/sign-in and profile loading/saving now use Supabase when its environment variables are configured. The rest of the app (habits, focus, check-ins, and Society) still uses browser-local state; those screens are not yet synced to the database. Without Supabase credentials, the app clearly runs in local demo mode.
 
 ### Configure Supabase
 
 1. Create a Supabase project.
 2. Run `web/supabase/migrations/20261125000000_phase_2_core.sql` in the Supabase SQL Editor.
 3. Copy `web/.env.example` to `web/.env.local` and fill in the project URL and publishable/anon key from the Supabase project settings. Never put the service-role key in the browser app or commit real keys.
-4. Start the app with `npm start`.
+4. In Supabase Auth URL settings, allow the local app URL (usually `http://localhost:5173`) for email confirmation redirects. Confirmation returns to the same origin where sign-up started, so a phone cannot reach a link targeting the laptop's `localhost`.
+5. Start the app with `npm start`, create an account, and confirm the email if confirmation is enabled for the project.
 
-The project does not require Supabase credentials to build or run its current local demo.
+The project does not require Supabase credentials to build or run its current local demo. The app's other data remains local until those features are connected in later Phase 2 slices.
