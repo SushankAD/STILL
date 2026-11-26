@@ -6,7 +6,7 @@ import {
 import { predefinedPolicy, resolveHabitPolicy } from '../supabase/functions/_shared/habit-predefined.ts'
 import type { EvidenceResult, HabitPolicy, TemplateKey } from '../supabase/functions/_shared/habit-policy.ts'
 import {
-  geminiGenerator, generateHabitPolicy, matchesSchema, policySchema, validatedPolicy, verifyHabitEvidence,
+  GeminiFailure, geminiGenerator, generateHabitPolicy, matchesSchema, policySchema, validatedPolicy, verifyHabitEvidence,
 } from '../supabase/functions/_shared/habit-evidence.ts'
 import type { EvidenceContext } from '../supabase/functions/_shared/habit-evidence.ts'
 import { MAX_PROOF_BYTES, readProofImage } from '../supabase/functions/_shared/proof-image.ts'
@@ -338,4 +338,37 @@ test('legacy predefined habits and social window edits use built-in policies wit
   equal(edited.changed, true)
   equal(edited.policy.measurableTarget.value, 10)
   match(edited.policy.completionCriteria.at(-1)!, /19:00/)
+})
+
+
+test('Gemini distinguishes missing and rejected keys and quota without retrying', async () => {
+  for (const [key, reply, cause] of [
+    [' ', undefined, 'missing_key'],
+    ['dummy-key', Response.json({
+      error: { message: 'Private API response', details: [{ reason: 'API_KEY_INVALID' }] },
+    }, { status: 400 }), 'key_rejected'],
+    ['dummy-key', Response.json({ error: 'Private API response' }, { status: 429 }), 'rate_limited'],
+  ] as const) {
+    let calls = 0
+    const generate = geminiGenerator(key, 'gemini-3.1-flash-lite', async () => {
+      calls++
+      return reply!
+    })
+    await rejects(generateHabitPolicy(generate, 'Practice guitar'), (error) =>
+      error instanceof GeminiFailure && error.category === cause && error.message === cause)
+    equal(calls, reply ? 1 : 0)
+  }
+})
+
+test('Gemini retries a 503 once within the existing timeout and returns a verified response', async () => {
+  const signals: Array<AbortSignal | null | undefined> = []
+  const policy = mockPolicy('Practice guitar', 'Show your guitar in the practice setting.', 'PHOTO')
+  const generate = geminiGenerator('dummy-key', 'gemini-3.1-flash-lite', async (_url, init) => {
+    signals.push(init?.signal)
+    return signals.length === 1 ? new Response(null, { status: 503 }) :
+      Response.json({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify(policy) }] } }] })
+  })
+  deepEqual(await generateHabitPolicy(generate, policy.habitTitle), policy)
+  equal(signals.length, 2)
+  equal(signals[0], signals[1])
 })

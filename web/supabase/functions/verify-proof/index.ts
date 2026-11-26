@@ -4,7 +4,7 @@ import {
 } from '../_shared/habit-policy.ts'
 import type { CompletionMethod, HabitDifficulty, HabitPolicy, SocialWindow, TemplateKey } from '../_shared/habit-policy.ts'
 import { resolveHabitPolicy } from '../_shared/habit-predefined.ts'
-import { DEFAULT_GEMINI_MODEL, focusSchema, geminiGenerator, generateHabitPolicy, matchesSchema, validatedPolicy, verifyHabitEvidence } from '../_shared/habit-evidence.ts'
+import { DEFAULT_GEMINI_MODEL, focusSchema, GeminiFailure, geminiGenerator, generateHabitPolicy, matchesSchema, validatedPolicy, verifyHabitEvidence } from '../_shared/habit-evidence.ts'
 import { MAX_PROOF_BYTES, readProofImage } from '../_shared/proof-image.ts'
 
 const db = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, {
@@ -126,17 +126,31 @@ async function cachedAI<T>(userId: string, key: string, work: () => Promise<T>):
   if (job.state === 'used') throw new RequestError(409, 'This evidence has already been used for this habit.')
   if (job.state === 'limited') throw new RequestError(429, 'Too many checks. Please wait a few minutes and try again.')
   if (job.state !== 'claimed') throw new RequestError(409, 'This check is already in progress. Please try again shortly.')
+  let savingResult = false
   try {
     const result = await work()
+    savingResult = true
     const { data: updated, error: updateError } = await db.from('habit_ai_jobs').update({
       state: 'ready', result, updated_at: new Date().toISOString(),
     }).eq('id', job.id).eq('user_id', userId).eq('state', 'running').select('id').maybeSingle()
     if (updateError || !updated) throw new Error('Could not finalize AI job')
     return { id: job.id, result }
-  } catch {
+  } catch (failure) {
+    const cause = savingResult ? 'job_storage' : failure instanceof GeminiFailure ? failure.category : 'invalid_response'
+    console.warn('STILL AI verification failed', {
+      operation: key.split(':', 1)[0], cause, providerStatus: failure instanceof GeminiFailure ? failure.status : undefined,
+    })
     await db.from('habit_ai_jobs').update({ state: 'failed', updated_at: new Date().toISOString() })
       .eq('id', job.id).eq('user_id', userId).eq('state', 'running')
-    throw new RequestError(503, 'AI verification is temporarily unavailable. Please try again.')
+
+    if (cause === 'rate_limited') throw new RequestError(429, 'Gemini reached its request limit. Try again in a few minutes.')
+    if (cause === 'missing_key') throw new RequestError(503, 'STILL needs a Gemini API key in Supabase Edge Function Secrets.')
+    if (cause === 'key_rejected') throw new RequestError(503, 'Gemini rejected the API key configured for STILL. Check the GEMINI_API_KEY secret in Supabase.')
+    if (cause === 'blocked') throw new RequestError(422, 'Gemini could not process this evidence. Try a different photo.')
+    if (cause === 'timeout') throw new RequestError(503, 'The photo check timed out. Try checking the image again.')
+    if (cause === 'invalid_response') throw new RequestError(503, 'Gemini returned an incomplete verification result. Try checking the image again.')
+    if (cause === 'job_storage') throw new RequestError(503, 'STILL could not save the verification result. Try again.')
+    throw new RequestError(503, 'Gemini is temporarily unavailable. Try checking the image again.')
   }
 }
 

@@ -112,14 +112,50 @@ Report observations independently of the decision. Use null for missing or ambig
 type ImageInput = { mimeType: 'image/jpeg'; imageBase64: string }
 type Generate = (system: string, data: object, schema: Schema, image?: ImageInput) => Promise<unknown>
 
+type GeminiFailureCategory = 'missing_key' | 'key_rejected' | 'rate_limited' | 'network' |
+  'timeout' | 'provider_unavailable' | 'provider_error' | 'blocked' | 'invalid_response'
+
+export class GeminiFailure extends Error {
+  readonly category: GeminiFailureCategory
+  readonly status?: number
+
+  constructor(category: GeminiFailureCategory, status?: number) {
+    super(category)
+    this.category = category
+    this.status = status
+  }
+}
+
+async function geminiHttpFailure(response: Response): Promise<GeminiFailure> {
+  const { status } = response
+  if (status === 429) return new GeminiFailure('rate_limited', status)
+  if (status === 500 || status === 502 || status === 503 || status === 504) return new GeminiFailure('provider_unavailable', status)
+  if (status === 401 || status === 403) return new GeminiFailure('key_rejected', status)
+
+  if (status === 400) {
+    const payload = await response.json().catch(() => null)
+    const details: unknown = payload?.error?.details
+    if (Array.isArray(details) && details.some((detail) =>
+      typeof detail?.reason === 'string' && (/^API_KEY_[A-Z_]+$/.test(detail.reason) || detail.reason === 'SERVICE_DISABLED')
+    )) return new GeminiFailure('key_rejected', status)
+    if (typeof payload?.error?.message === 'string' && /\bapi key (?:not valid|is invalid|expired|is blocked)\b/i.test(payload.error.message)) {
+      return new GeminiFailure('key_rejected', status)
+    }
+  }
+
+  return new GeminiFailure('provider_error', status)
+}
+
 export function geminiGenerator(apiKey: string | undefined, model: string, request = fetch): Generate {
+  const key = apiKey?.trim()
   return async (system, data, schema, image) => {
-    if (!apiKey) throw new Error('Missing AI configuration')
+    if (!key) throw new GeminiFailure('missing_key')
     const parts: Record<string, unknown>[] = [{ text: JSON.stringify(data) }]
     if (image) parts.push({ inlineData: { mimeType: image.mimeType, data: image.imageBase64 } })
-    const response = await request(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`
+    const init: RequestInit = {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
       signal: AbortSignal.timeout(25_000),
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: system }] },
@@ -129,15 +165,40 @@ export function geminiGenerator(apiKey: string | undefined, model: string, reque
           ...(model === 'gemini-3.8-flash' ? { thinkingConfig: { thinkingLevel: 'low' } } : {}),
         },
       }),
-    })
-    if (!response.ok) throw new Error('AI provider request failed')
-    const payload = await response.json()
-    const candidate = payload?.candidates?.[0]
-    if (candidate?.finishReason !== 'STOP' || !Array.isArray(candidate.content?.parts)) throw new Error('Incomplete AI response')
-    const text = candidate.content.parts
-      .filter((part: { thought?: boolean }) => !part.thought)
-      .map((part: { text?: string }) => part.text ?? '').join('')
-    return JSON.parse(text)
+    }
+
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        let response: Response
+        try {
+          response = await request(endpoint, init)
+        } catch (error) {
+          const timedOut = init.signal?.aborted ||
+            (error instanceof DOMException && (error.name === 'AbortError' || error.name === 'TimeoutError'))
+          throw new GeminiFailure(timedOut ? 'timeout' : 'network')
+        }
+        if (!response.ok) throw await geminiHttpFailure(response)
+
+        const payload = await response.json().catch(() => null)
+        const candidate = payload?.candidates?.[0]
+        if (payload?.promptFeedback?.blockReason || ['SAFETY', 'PROHIBITED_CONTENT', 'IMAGE_SAFETY'].includes(candidate?.finishReason)) {
+          throw new GeminiFailure('blocked')
+        }
+        if (candidate?.finishReason !== 'STOP' || !Array.isArray(candidate.content?.parts)) throw new GeminiFailure('invalid_response')
+        const text = candidate.content.parts
+          .filter((part: { thought?: boolean }) => !part.thought)
+          .map((part: { text?: string }) => part.text ?? '').join('')
+        try {
+          return JSON.parse(text)
+        } catch {
+          throw new GeminiFailure('invalid_response')
+        }
+      } catch (error) {
+        if (attempt > 0 || !(error instanceof GeminiFailure) ||
+          (error.category !== 'network' && error.category !== 'provider_unavailable') || init.signal?.aborted) throw error
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      }
+    }
   }
 }
 
