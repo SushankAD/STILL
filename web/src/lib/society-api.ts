@@ -20,59 +20,27 @@ type RawPostRow = {
   id: string
   icon: string
   body: string
-  created_at: string
-  society_reactions: { user_id: string; reaction: string }[] | null
-  society_comments: { id: string; body: string; created_at: string }[] | null
+  reactions: Record<ReactionType, number>
+  reacted: ReactionType | null
+  comments: SocietyComment[]
 }
 
-function isReactionType(value: string): value is ReactionType {
-  return value === 'like' || value === 'love' || value === 'same' || value === 'proud'
-}
-
-export async function fetchSocietyPosts(userId: string): Promise<SocietyPost[]> {
-  const client = requireSupabase()
-
-  const { data, error } = await client
-    .from('society_posts')
-    .select(`
-      id,
-      icon,
-      body,
-      created_at,
-      society_reactions ( user_id, reaction ),
-      society_comments ( id, body, created_at )
-    `)
+export async function fetchSocietyPosts(): Promise<SocietyPost[]> {
+  const { data, error } = await requireSupabase()
+    .rpc('get_society_feed')
     .order('created_at', { ascending: false })
-    .limit(40)
+    .order('id', { ascending: false })
 
   if (error) throw error
 
-  return ((data ?? []) as unknown as RawPostRow[]).map((row) => {
-    const counts: Record<ReactionType, number> = { like: 0, love: 0, same: 0, proud: 0 }
-    let reacted: ReactionType | null = null
-
-    for (const r of row.society_reactions ?? []) {
-      if (isReactionType(r.reaction)) {
-        counts[r.reaction] += 1
-        if (r.user_id === userId) {
-          reacted = r.reaction
-        }
-      }
-    }
-
-    const comments = [...(row.society_comments ?? [])]
-      .sort((a, b) => a.created_at.localeCompare(b.created_at))
-      .map((c) => ({ id: c.id, text: c.body }))
-
-    return {
-      id: row.id,
-      icon: row.icon || '🌱',
-      text: row.body,
-      reactions: counts,
-      reacted,
-      comments,
-    }
-  })
+  return ((data ?? []) as RawPostRow[]).map((row) => ({
+    id: row.id,
+    icon: row.icon || '🌱',
+    text: row.body,
+    reactions: row.reactions,
+    reacted: row.reacted,
+    comments: row.comments,
+  }))
 }
 
 export async function createSocietyPost(

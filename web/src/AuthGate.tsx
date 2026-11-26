@@ -1,12 +1,21 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
+import { isAuthImplicitGrantRedirectError } from '@supabase/supabase-js'
 import type { Session } from '@supabase/supabase-js'
 import StillApp from './App'
 import { getProfile, updateProfileName } from './lib/profile-api'
 import type { Profile } from './lib/profile-api'
 import { isSupabaseConfigured, requireSupabase } from './lib/supabase'
 
-type AuthMode = 'sign-in' | 'sign-up'
+type AuthMode = 'sign-in' | 'sign-up' | 'forgot-password'
+type AuthScreenMode = AuthMode | 'reset-password'
+
+const accountActions = {
+  'sign-in': { title: 'Welcome back.', copy: 'Sign in to keep your STILL profile with you.', submit: 'Sign in to STILL' },
+  'sign-up': { title: 'Begin gently.', copy: 'Create an account to keep your STILL profile with you.', submit: 'Create my account' },
+  'forgot-password': { title: 'Reset your password.', copy: 'Enter your account email to get a reset link.', submit: 'Send reset link' },
+  'reset-password': { title: 'Choose a new password.', copy: 'Use at least 8 characters.', submit: 'Save new password' },
+} satisfies Record<AuthScreenMode, { title: string; copy: string; submit: string }>
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message
@@ -41,7 +50,7 @@ function AuthScreen({
   error,
   notice,
 }: {
-  mode: AuthMode
+  mode: AuthScreenMode
   onModeChange: (mode: AuthMode) => void
   onSubmit: (values: { email: string; password: string; displayName: string }) => void
   busy: boolean
@@ -51,6 +60,8 @@ function AuthScreen({
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [displayName, setDisplayName] = useState('')
+  const action = accountActions[mode]
+  const showAccountSwitch = mode === 'sign-in' || mode === 'sign-up'
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -70,15 +81,16 @@ function AuthScreen({
             <div className="onboarding auth-onboarding">
               <div className="app-mark"><img className="brand-mark-img" src="/assets/still-app-icon.png" alt="" /></div>
               <p className="eyebrow">YOUR SPACE, YOUR PACE</p>
-              <h1>{mode === 'sign-in' ? 'Welcome back.' : 'Begin gently.'}</h1>
-              <p className="onboard-copy">Sign in to keep your STILL profile with you.</p>
+              <h1>{action.title}</h1>
+              <p className="onboard-copy">{action.copy}</p>
             </div>
 
-            <div className="auth-mode-switch" aria-label="Account action">
+            {showAccountSwitch && <div className="auth-mode-switch" aria-label="Account action">
               <button
                 type="button"
                 className={mode === 'sign-in' ? 'selected' : ''}
                 aria-pressed={mode === 'sign-in'}
+                disabled={busy}
                 onClick={() => onModeChange('sign-in')}
               >
                 Sign in
@@ -87,11 +99,12 @@ function AuthScreen({
                 type="button"
                 className={mode === 'sign-up' ? 'selected' : ''}
                 aria-pressed={mode === 'sign-up'}
+                disabled={busy}
                 onClick={() => onModeChange('sign-up')}
               >
                 Create account
               </button>
-            </div>
+            </div>}
 
             <form className="auth-form" onSubmit={submit}>
               {mode === 'sign-up' && (
@@ -108,7 +121,7 @@ function AuthScreen({
                   />
                 </label>
               )}
-              <label className="auth-field">
+              {mode !== 'reset-password' && <label className="auth-field">
                 <span>Email</span>
                 <input
                   className="input"
@@ -119,9 +132,9 @@ function AuthScreen({
                   onChange={(event) => setEmail(event.target.value)}
                   placeholder="you@example.com"
                 />
-              </label>
-              <label className="auth-field">
-                <span>Password</span>
+              </label>}
+              {mode !== 'forgot-password' && <label className="auth-field">
+                <span>{mode === 'reset-password' ? 'New password' : 'Password'}</span>
                 <input
                   className="input"
                   type="password"
@@ -130,16 +143,20 @@ function AuthScreen({
                   required
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
-                  placeholder="At least 8 characters"
+                  placeholder={mode === 'reset-password' ? undefined : 'At least 8 characters'}
                 />
-              </label>
+              </label>}
 
               {error && <p className="auth-message error" role="alert">{error}</p>}
               {notice && <p className="auth-message" role="status">{notice}</p>}
 
               <button className="primary-btn" type="submit" disabled={busy} style={{ marginTop: 16 }}>
-                {busy ? 'Please wait…' : mode === 'sign-in' ? 'Sign in to STILL' : 'Create my account'}
+                {busy ? 'Please wait…' : action.submit}
               </button>
+              {mode === 'sign-in' && <button className="ghost-btn" type="button" disabled={busy}
+                onClick={() => onModeChange('forgot-password')}>Forgot password?</button>}
+              {mode === 'forgot-password' && <button className="ghost-btn" type="button" disabled={busy}
+                onClick={() => onModeChange('sign-in')}>Back to sign in</button>}
             </form>
 
             <p className="auth-privacy">Your private check-ins and progress belong to your account.</p>
@@ -156,6 +173,7 @@ export default function AuthGate() {
   const [initializing, setInitializing] = useState(isSupabaseConfigured)
   const [profileRetry, setProfileRetry] = useState(0)
   const [authMode, setAuthMode] = useState<AuthMode>('sign-in')
+  const [recoveryUserId, setRecoveryUserId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [authError, setAuthError] = useState('')
   const [profileError, setProfileError] = useState('')
@@ -178,11 +196,30 @@ export default function AuthGate() {
       setProfileError('')
       setAuthError('')
     }
-    const { data: { subscription } } = client.auth.onAuthStateChange((_event, nextSession) => {
+    const { data: { subscription } } = client.auth.onAuthStateChange((event, nextSession) => {
+      if (!active) return
       receiveSession(nextSession)
+      const nextUserId = nextSession?.user.id
+      if (event === 'PASSWORD_RECOVERY' && nextUserId) {
+        setRecoveryUserId(nextUserId)
+        setAuthError('')
+        setNotice('')
+      } else {
+        setRecoveryUserId((userId) => userId === nextUserId ? userId : null)
+      }
     })
 
-    client.auth.getSession()
+    client.auth.initialize()
+      .then(({ error }) => {
+        if (active && isAuthImplicitGrantRedirectError(error)) {
+          setAuthError('This email link is invalid or has expired. Request a new link to try again.')
+          const url = new URL(window.location.href)
+          url.hash = ''
+          for (const param of ['error', 'error_code', 'error_description']) url.searchParams.delete(param)
+          window.history.replaceState(window.history.state, '', url)
+        }
+        return client.auth.getSession()
+      })
       .then(({ data, error }) => {
         if (error) throw error
         receiveSession(data.session)
@@ -201,9 +238,10 @@ export default function AuthGate() {
   }, [])
 
   const userId = session?.user.id
+  const recoveringPassword = Boolean(userId && userId === recoveryUserId)
 
   useEffect(() => {
-    if (!userId) return
+    if (!userId || recoveringPassword) return
 
     let active = true
     getProfile(userId)
@@ -217,7 +255,7 @@ export default function AuthGate() {
     return () => {
       active = false
     }
-  }, [userId, profileRetry])
+  }, [userId, profileRetry, recoveringPassword])
 
   const submitAuth = async (values: { email: string; password: string; displayName: string }) => {
     setBusy(true)
@@ -225,7 +263,18 @@ export default function AuthGate() {
     setNotice('')
     try {
       const client = requireSupabase()
-      if (authMode === 'sign-up') {
+      if (recoveringPassword) {
+        const { error } = await client.auth.updateUser({ password: values.password })
+        if (error) throw error
+        setRecoveryUserId(null)
+        setAuthMode('sign-in')
+      } else if (authMode === 'forgot-password') {
+        const { error } = await client.auth.resetPasswordForEmail(values.email, {
+          redirectTo: window.location.origin,
+        })
+        if (error) throw error
+        setNotice('If an account uses that email, a reset link is on its way.')
+      } else if (authMode === 'sign-up') {
         const { data, error } = await client.auth.signUp({
           email: values.email,
           password: values.password,
@@ -263,11 +312,11 @@ export default function AuthGate() {
     return <StillApp demoMode />
   }
 
-  if (initializing || (session && !profile && !profileError)) {
+  if (initializing || (!recoveringPassword && session && !profile && !profileError)) {
     return <LoadingScreen message="Loading your private STILL space…" />
   }
 
-  if (session && profileError) {
+  if (!recoveringPassword && session && profileError) {
     return (
       <LoadingScreenWithError
         message={profileError}
@@ -281,7 +330,7 @@ export default function AuthGate() {
     )
   }
 
-  if (session && profile) {
+  if (!recoveringPassword && session && profile) {
     return (
       <StillApp
         key={session.user.id}
@@ -296,7 +345,8 @@ export default function AuthGate() {
 
   return (
     <AuthScreen
-      mode={authMode}
+      key={recoveringPassword ? 'recovery' : 'auth'}
+      mode={recoveringPassword ? 'reset-password' : authMode}
       onModeChange={(mode) => {
         setAuthMode(mode)
         setAuthError('')

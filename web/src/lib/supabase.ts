@@ -10,7 +10,10 @@ if (Boolean(supabaseUrl) !== Boolean(supabaseAnonKey)) {
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey)
 
 export const supabase = isSupabaseConfigured
-  ? createClient(supabaseUrl!, supabaseAnonKey!)
+  ? createClient(supabaseUrl!, supabaseAnonKey!, {
+    // AuthGate subscribes before processing the URL so the recovery event cannot be missed.
+    auth: { skipAutoInitialize: true },
+  })
   : null
 
 export function requireSupabase() {

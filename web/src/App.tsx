@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import CollectionImage from "./CollectionImage";
+import ProofPhotoInput from "./ProofPhotoInput";
 import { playCompletionRingtone, unlockAudio } from "./lib/chime";
 import { expireFocusCountdown, focusSecondsLeft, isFocusProofReady } from "./lib/focus-timer";
 import { getSeedGrowth, seedRootsProgress, seedStages, updateSeedMilestones } from "./lib/seed-growth";
@@ -26,7 +27,7 @@ import {
 import type { HabitCompletion, HabitDraft, HabitRecord } from "./lib/habit-api";
 import { DEFAULT_SOCIAL_WINDOW, findTemplate, habitRoots, habitTemplates } from "../supabase/functions/_shared/habit-policy";
 import type { SocialWindow } from "../supabase/functions/_shared/habit-policy";
-import { prepareProofImage, proofImageTypes, verifyFocusProofWithAI } from "./lib/proof-ai";
+import { prepareProofImage, verifyFocusProofWithAI } from "./lib/proof-ai";
 import type { PreparedImage, ProofVerificationResult } from "./lib/proof-ai";
 import { fetchCollectionPhotos, uploadProofPhoto } from "./lib/proof-api";
 import type { CollectionPhoto } from "./lib/proof-api";
@@ -152,22 +153,23 @@ const dayStates = {
 };
 
 function loadState(storageKey: string, accountMode: boolean): State {
+  const initialState = accountMode ? { ...defaultState, societyPosts: [] } : defaultState;
   try {
     const saved = JSON.parse(localStorage.getItem(storageKey) || "null");
-    if (!saved) return defaultState;
+    if (!saved) return initialState;
     const seedStartedAt = saved.seedStartedAt ?? (saved.onboarded ? Date.now() : null);
     return {
-      ...defaultState,
+      ...initialState,
       ...saved,
       seedStartedAt,
       seedMilestones: accountMode ? saved.seedMilestones ?? {}
         : updateSeedMilestones(saved.seedMilestones ?? {}, saved.roots ?? 0, seedStartedAt ?? Date.now()),
       habits: saved.habits || defaultState.habits,
-      societyPosts: saved.societyPosts || defaultState.societyPosts,
+      societyPosts: accountMode ? [] : saved.societyPosts ?? initialState.societyPosts,
       collectionPhotos: accountMode ? [] : saved.collectionPhotos || [],
     };
   } catch {
-    return defaultState;
+    return initialState;
   }
 }
 
@@ -207,9 +209,12 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
   const [habitEdit, setHabitEdit] = useState<{ habit: Habit; title: string; window: SocialWindow } | null>(null);
   const [habitEditError, setHabitEditError] = useState("");
   const habitCreation = useRef<{ key: string; id: string; busy: boolean } | null>(null);
-  const habitTotalsVersion = useRef(0);
+  const statsVersion = useRef(0);
+  const [statsStatus, setStatsStatus] = useState<HabitLoadStatus>(userId ? "loading" : "ready");
   const collectionVersion = useRef(0);
   const [collectionStatus, setCollectionStatus] = useState<HabitLoadStatus>(userId ? "loading" : "ready");
+  const [societyStatus, setSocietyStatus] = useState<HabitLoadStatus>(userId ? "loading" : "ready");
+  const [societyRetry, setSocietyRetry] = useState(0);
   const [postingWin, setPostingWin] = useState(false);
   const [openRepliesPostId, setOpenRepliesPostId] = useState<Post["id"] | null>(null);
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
@@ -228,7 +233,7 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
 
   useEffect(() => {
     try {
-      localStorage.setItem(storageKey, JSON.stringify(userId ? { ...state, collectionPhotos: [] } : state));
+      localStorage.setItem(storageKey, JSON.stringify(userId ? { ...state, collectionPhotos: [], societyPosts: [] } : state));
     } catch {
       // Keep the session usable if browser storage is unavailable.
     }
@@ -248,13 +253,17 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
     setHabitStatus("loading");
     setHabitRetry((attempt) => attempt + 1);
   };
-  const refreshHabitTotals = () => {
+  const refreshStats = useCallback(() => {
     if (!userId) return;
-    const version = ++habitTotalsVersion.current;
+    const version = ++statsVersion.current;
     void fetchUserStats(userId).then((stats) => {
-      if (version === habitTotalsVersion.current) save(stats);
-    }).catch(() => {});
-  };
+      if (version !== statsVersion.current) return;
+      save(stats);
+      setStatsStatus("ready");
+    }).catch(() => {
+      if (version === statsVersion.current) setStatsStatus("error");
+    });
+  }, [save, userId]);
   const refreshCollection = useCallback(() => {
     if (!userId) return;
     const version = ++collectionVersion.current;
@@ -303,6 +312,22 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
   }, []);
 
   useEffect(() => {
+    if (!userId) return;
+    const version = statsVersion;
+    const refreshVisibleStats = () => {
+      if (document.visibilityState === "visible") refreshStats();
+    };
+    refreshStats();
+    document.addEventListener("visibilitychange", refreshVisibleStats);
+    window.addEventListener("online", refreshVisibleStats);
+    return () => {
+      version.current++;
+      document.removeEventListener("visibilitychange", refreshVisibleStats);
+      window.removeEventListener("online", refreshVisibleStats);
+    };
+  }, [refreshStats, userId]);
+
+  useEffect(() => {
     if (!userId || state.tab !== "collection") return;
     const refreshVisibleCollection = () => {
       if (document.visibilityState === "visible") refreshCollection();
@@ -315,6 +340,23 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
       window.removeEventListener("online", refreshVisibleCollection);
     };
   }, [refreshCollection, state.tab, userId]);
+
+  useEffect(() => {
+    if (!userId) return;
+
+    let active = true;
+    fetchSocietyPosts().then((societyPosts) => {
+      if (!active) return;
+      save({ societyPosts });
+      setSocietyStatus("ready");
+    }).catch(() => {
+      if (active) setSocietyStatus("error");
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [userId, save, societyRetry]);
 
   useEffect(() => {
     if (!userId) return;
@@ -342,25 +384,16 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
     if (!userId) return;
 
     let active = true;
-    const totalsVersion = habitTotalsVersion.current;
-    void Promise.allSettled([
-      fetchTodayCheckIn(userId),
-      fetchUserStats(userId),
-      fetchSocietyPosts(userId),
-    ]).then(([checkIn, stats, society]) => {
-      if (!active) return;
-      const patch: Partial<State> = {};
-      if (stats.status === "fulfilled" && totalsVersion === habitTotalsVersion.current) Object.assign(patch, stats.value);
-      if (society.status === "fulfilled" && society.value.length > 0) patch.societyPosts = society.value;
-      if (checkIn.status === "fulfilled" && checkIn.value) {
-        patch.dailyState = checkIn.value.dayState;
-        patch.mood = checkIn.value.mood;
-        patch.load = checkIn.value.mentalLoad;
-        patch.lastReflection = checkIn.value.reflection;
-        patch.lastCheckInDate = checkIn.value.checkInDate;
-      }
-      save(patch);
-    });
+    void fetchTodayCheckIn(userId).then((checkIn) => {
+      if (!active || !checkIn) return;
+      save({
+        dailyState: checkIn.dayState,
+        mood: checkIn.mood,
+        load: checkIn.mentalLoad,
+        lastReflection: checkIn.reflection,
+        lastCheckInDate: checkIn.checkInDate,
+      });
+    }).catch(() => {});
 
     return () => {
       active = false;
@@ -449,7 +482,7 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
           checkins: nextCheckins,
           roots: nextRoots,
         });
-        refreshHabitTotals();
+        refreshStats();
         notify(isUpdate ? "Check-in updated." : "Check-in saved. +12 roots.");
       } catch (error) {
         notify(errorMessage(error) || "Could not save check-in.");
@@ -570,7 +603,7 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
     });
     setHabitProofTarget((current) => current?.id === habit.id ? null : current);
     setHabitRetry((attempt) => attempt + 1);
-    refreshHabitTotals();
+    refreshStats();
     if (photoSaved) refreshCollection();
     notify(photoSaved === false
       ? `Habit recorded. +${roots} roots. The Collection copy could not be saved.`
@@ -587,7 +620,7 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
         onComplete={(completion, photoSaved) => habitRecorded(habitProofTarget, completion, photoSaved)}
         onAlreadyComplete={() => {
           setHabitRetry((attempt) => attempt + 1);
-          refreshHabitTotals();
+          refreshStats();
         }}
       />
     </Suspense>
@@ -636,7 +669,7 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
       if (userId) {
         if (!habit.completionId) return;
         const { storageWarning } = await removeHabitCompletion(String(habit.id), habit.completionId);
-        refreshHabitTotals();
+        refreshStats();
         refreshCollection();
         setHabitRetry((attempt) => attempt + 1);
         if (storageWarning) notify("Completion removed. STILL could not remove the Collection copy.");
@@ -694,7 +727,7 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
   const handlePostSocietyWin = async () => {
     const text = state.hardWinDraft.trim();
     if (!text) return notify("Write the small win first.");
-    if (postingWin) return;
+    if (postingWin || societyStatus === "loading") return;
 
     const icon = dayStates[state.dailyState].icon;
     setPostingWin(true);
@@ -703,11 +736,11 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
         ? await createSocietyPost(userId, icon, text)
         : { id: Date.now(), icon, text, reactions: { like: 0, love: 0, same: 0, proud: 0 }, reacted: null, comments: [] };
 
-      save({
-        societyPosts: [created, ...state.societyPosts],
-        roots: userId ? state.roots : state.roots + 8,
+      save((current) => ({
+        societyPosts: [created, ...current.societyPosts],
+        roots: userId ? current.roots : current.roots + 8,
         hardWinDraft: "",
-      });
+      }));
       notify(userId ? "Anonymous post shared." : "Anonymous post shared. +8 roots.");
     } catch (error) {
       notify(errorMessage(error));
@@ -813,9 +846,10 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
     unlockAudio();
     try {
       const record = userId
-        ? await startFocusSession(userId, state.intention, state.selectedDepth, depth.minutes)
+        ? await startFocusSession(state.intention, state.selectedDepth)
         : null;
-      const totalSec = depth.minutes * 60;
+      const minutes = record?.plannedMinutes ?? depth.minutes;
+      const totalSec = minutes * 60;
       const now = Date.now();
       const deadline = now + totalSec * 1000;
       runningFocusDeadline.current = deadline;
@@ -827,8 +861,9 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
         focusRemainingSeconds: totalSec,
         focusEndsAt: deadline,
         focusSessionId: record?.id ?? null,
+        intention: record?.intention ?? state.intention,
       });
-      notify(`Focus started: ${depth.minutes} minutes.`);
+      notify(`Focus started: ${minutes} minutes.`);
     } catch (error) {
       notify(errorMessage(error));
     } finally {
@@ -882,7 +917,9 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
       const prepared = file ? await prepareProofImage(file) : focusProofImage!;
       if (check !== focusProofCheck.current) return;
       setFocusProofImage(prepared);
-      const result = await verifyFocusProofWithAI(prepared, state.intention || `${depth.label} focus session`);
+      const result = await verifyFocusProofWithAI(prepared, state.focusSessionId
+        ? { focusSessionId: state.focusSessionId }
+        : { activity: state.intention || `${depth.label} focus session` });
       if (check === focusProofCheck.current) setFocusProofResult(result);
     } catch (error) {
       if (check === focusProofCheck.current) setFocusProofError(errorMessage(error));
@@ -895,16 +932,21 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
     if (!focusProofReady || focusProofChecking || !focusProofImage ||
       !focusProofResult?.verified || !beginFocusOperation("saving")) return;
 
+    setFocusProofError("");
     try {
       const sessionId = state.focusSessionId;
-      const newCompletion = userId && sessionId
-        ? await completeFocusSession(userId, sessionId, depth.roots)
-        : true;
+      let completion = { newlyCompleted: true, roots: depth.roots, minutes: depth.minutes };
+      if (userId) {
+        const verificationId = focusProofResult.verificationId;
+        if (!sessionId || !verificationId) throw new Error("Check the photo again before submitting this session.");
+        completion = await completeFocusSession(sessionId, verificationId);
+      }
+      const { newlyCompleted, roots, minutes } = completion;
       const label = state.intention || `${depth.label} focus`;
       let photo: CollectionPhoto | null = null;
       let photoSaveFailed = false;
 
-      if (newCompletion && userId && sessionId) {
+      if (newlyCompleted && userId && sessionId) {
         try {
           photo = await uploadProofPhoto(userId, focusProofImage, { kind: "focus", focusSessionId: sessionId }, label);
         } catch {
@@ -922,17 +964,17 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
 
       save((current) => ({
         ...focusReset,
-        roots: current.roots + (newCompletion ? depth.roots : 0),
-        focusMinutes: current.focusMinutes + (newCompletion ? depth.minutes : 0),
+        roots: current.roots + (newlyCompleted ? roots : 0),
+        focusMinutes: current.focusMinutes + (newlyCompleted ? minutes : 0),
         collectionPhotos: photo ? [photo, ...current.collectionPhotos] : current.collectionPhotos,
       }));
       clearFocusPhoto();
-      refreshHabitTotals();
+      refreshStats();
 
-      if (photoSaveFailed) notify(`Focus complete. +${depth.roots} roots. Could not save the Collection photo.`);
-      else notify(newCompletion ? `Proof accepted! +${depth.roots} roots.` : "Focus was already saved.");
+      if (photoSaveFailed) notify(`Focus complete. +${roots} roots. Could not save the Collection photo.`);
+      else notify(newlyCompleted ? `Proof accepted! +${roots} roots.` : "Focus was already saved.");
     } catch (error) {
-      notify(errorMessage(error));
+      setFocusProofError(errorMessage(error));
     } finally {
       endFocusOperation();
     }
@@ -945,8 +987,8 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
     save(focusReset);
 
     try {
-      if (userId && state.focusSessionId && !(await abandonFocusSession(userId, state.focusSessionId))) {
-        refreshHabitTotals();
+      if (userId && state.focusSessionId && !(await abandonFocusSession(state.focusSessionId))) {
+        refreshStats();
         notify("This focus session was already saved.");
       } else {
         notify("Focus ended without roots.");
@@ -964,7 +1006,7 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
         <div className="phone">
           <header className="topbar">
             <button className="icon-btn" aria-label="Settings" onClick={() => setTab("settings")}><span className="icon-settings"></span></button>
-            <div><p className="tiny-label">Day <span>{state.day}</span></p><strong>STILL</strong></div>
+            <div>{statsStatus === "ready" && <p className="tiny-label">Day <span>{state.day}</span></p>}<strong>STILL</strong></div>
             <button className="icon-btn" aria-label="Open collection" onClick={() => setTab("collection")}><span className="icon-collection"></span></button>
           </header>
 
@@ -992,42 +1034,54 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
               </section>
             ) : state.tab === "home" ? (
               <section>
-                <section className="hero-card">
-                  <div className="drop-stage">
-                    <img key={stage.number} className="home-stage-img" src={`/assets/still-logo-stage-${stage.number}.png`}
-                      width={148} height={148} alt={stage.name} />
+                {statsStatus === "loading" ? (
+                  <div className="message-card" role="status"><strong>Loading Seed Drop progress…</strong></div>
+                ) : statsStatus === "error" ? (
+                  <div className="message-card" role="alert">
+                    <strong>Could not load Seed Drop progress.</strong>
+                    <button className="ghost-btn" type="button" onClick={() => {
+                      setStatsStatus("loading");
+                      refreshStats();
+                    }}>Retry</button>
                   </div>
-                  <div className="stage-title">
-                    <h2>Hello, {firstName}</h2>
-                    <p><strong>Stage {stage.number} of 5 · {stage.name}</strong></p>
-                    <p>{stage.copy}</p>
-                  </div>
-                  <ol className="seed-steps" aria-label="Seed Drop stages">
-                    {seedStages.map((step) => (
-                      <li key={step.number} className={step.number <= stage.number ? "reached" : undefined}
-                        aria-current={step.number === stage.number ? "step" : undefined}>
-                        <span title={`${step.name} · ${step.roots.toLocaleString()} roots`}
-                          aria-label={`Stage ${step.number}, ${step.name}, ${step.roots.toLocaleString()} roots`}>{step.number}</span>
-                      </li>
-                    ))}
-                  </ol>
-                  {next && nextTimeAt !== null && rootProgress ? (
-                    <div className="seed-goal">
-                      <div className="seed-goal-row">
-                        <strong>Next · Stage {next.number}</strong>
-                        <span>{state.roots.toLocaleString()} / {next.roots.toLocaleString()} roots</span>
-                      </div>
-                      <div className="progress-line" role="progressbar" aria-label={`Roots toward Stage ${next.number}`}
-                        aria-valuemax={next.roots} aria-valuenow={rootProgress.credited} data-complete={rootProgress.goalMet}>
-                        <span style={{ "--pct": `${rootProgress.percent}%` } as React.CSSProperties}></span>
-                      </div>
-                      <p>{state.roots >= next.roots ? "Roots goal met" : `${(next.roots - state.roots).toLocaleString()} roots to go`}</p>
-                      <p>{seedClock >= nextTimeAt ? "Time requirement met" : `Time requirement ends ${new Date(nextTimeAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`}</p>
-                      <p>{stage.number === 1 ? "Spend at least 1 week in Stage 1." : `Spend at least 1 month in Stage ${stage.number}.`}</p>
+                ) : (
+                  <section className="hero-card">
+                    <div className="drop-stage">
+                      <img key={stage.number} className="home-stage-img" src={`/assets/still-logo-stage-${stage.number}.png`}
+                        width={148} height={148} alt={stage.name} />
                     </div>
-                  ) : <p className="seed-finish">All five Seed Drop stages reached.</p>}
-                  <div className="stat-grid"><div className="stat"><b>{state.roots}</b><small>Roots</small></div><div className="stat"><b>{state.focusMinutes}</b><small>Focus min</small></div><div className="stat"><b>{state.checkins}</b><small>Check-ins</small></div></div>
-                </section>
+                    <div className="stage-title">
+                      <h2>Hello, {firstName}</h2>
+                      <p><strong>Stage {stage.number} of 5 · {stage.name}</strong></p>
+                      <p>{stage.copy}</p>
+                    </div>
+                    <ol className="seed-steps" aria-label="Seed Drop stages">
+                      {seedStages.map((step) => (
+                        <li key={step.number} className={step.number <= stage.number ? "reached" : undefined}
+                          aria-current={step.number === stage.number ? "step" : undefined}>
+                          <span title={`${step.name} · ${step.roots.toLocaleString()} roots`}
+                            aria-label={`Stage ${step.number}, ${step.name}, ${step.roots.toLocaleString()} roots`}>{step.number}</span>
+                        </li>
+                      ))}
+                    </ol>
+                    {next && nextTimeAt !== null && rootProgress ? (
+                      <div className="seed-goal">
+                        <div className="seed-goal-row">
+                          <strong>Next · Stage {next.number}</strong>
+                          <span>{state.roots.toLocaleString()} / {next.roots.toLocaleString()} roots</span>
+                        </div>
+                        <div className="progress-line" role="progressbar" aria-label={`Roots toward Stage ${next.number}`}
+                          aria-valuemax={next.roots} aria-valuenow={rootProgress.credited} data-complete={rootProgress.goalMet}>
+                          <span style={{ "--pct": `${rootProgress.percent}%` } as React.CSSProperties}></span>
+                        </div>
+                        <p>{state.roots >= next.roots ? "Roots goal met" : `${(next.roots - state.roots).toLocaleString()} roots to go`}</p>
+                        <p>{seedClock >= nextTimeAt ? "Time requirement met" : `Time requirement ends ${new Date(nextTimeAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`}</p>
+                        <p>{stage.number === 1 ? "Spend at least 1 week in Stage 1." : `Spend at least 1 month in Stage ${stage.number}.`}</p>
+                      </div>
+                    ) : <p className="seed-finish">All five Seed Drop stages reached.</p>}
+                    <div className="stat-grid"><div className="stat"><b>{state.roots}</b><small>Roots</small></div><div className="stat"><b>{state.focusMinutes}</b><small>Focus min</small></div><div className="stat"><b>{state.checkins}</b><small>Check-ins</small></div></div>
+                  </section>
+                )}
                 <section className="pulse-card"><div><span>{dayStates[state.dailyState].icon}</span><strong>{dayStates[state.dailyState].title}</strong><p>{state.dailyState === "heavy" ? "Start with a check-in. Let the app lower the day before it asks for effort." : state.dailyState === "tiny" ? "Pick one small habit. A visible start is enough." : "You have enough steadiness for one clean focus session."}</p></div><button className="small-btn" onClick={() => setTab(state.dailyState === "heavy" ? "checkin" : state.dailyState === "tiny" ? "habits" : "focus")}>Start</button></section>
                 <div className="section-title"><h2>What do you need?</h2><p>Choose gently.</p></div>
                 <div className="quick-row">
@@ -1137,21 +1191,11 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
                           <div className="emoji-badge mint-icon">📷</div>
                           <strong>Upload a quick proof photo for "{state.intention}".</strong>
                           <p>A notebook page, workout screen, tidy desk, book page, or finished task is enough.</p>
-                          <label className="ghost-btn" style={{ display: "inline-block", marginTop: 10, cursor: "pointer" }}>
-                            {focusProofImage ? "Change photo" : "📷 Choose or take photo"}
-                            <input
-                              type="file"
-                              accept={proofImageTypes}
-                              capture="environment"
-                              style={{ display: "none" }}
-                              disabled={focusProofChecking || focusOperation === "saving"}
-                              onChange={(event) => {
-                                const file = event.currentTarget.files?.[0];
-                                event.currentTarget.value = "";
-                                if (file) void handleSelectFocusProof(file);
-                              }}
-                            />
-                          </label>
+                          <ProofPhotoInput
+                            disabled={focusProofChecking || focusOperation !== null}
+                            hasImage={Boolean(focusProofImage)}
+                            onSelect={(file) => { void handleSelectFocusProof(file); }}
+                          />
                           {focusProofName && <p className="proof-name">{focusProofName}</p>}
                           {focusProofImage && <img className="proof-preview" src={focusProofImage.dataUrl} alt="Focus proof preview" />}
                           {focusProofChecking && <p role="status" style={{ marginTop: 10 }}>Checking proof photo…</p>}
@@ -1218,9 +1262,22 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
                 <div className="society-hero"><strong>A quiet anonymous forum for hard days.</strong><p>Share the small hard win, react gently, reply if it helps, and keep the room safe.</p></div>
                 <div className="section-title"><h2>Post anonymously</h2><p>Small hard win.</p></div>
                 <textarea className="textarea" maxLength={180} value={state.hardWinDraft} onChange={(event) => save({ hardWinDraft: event.target.value })} placeholder="Example: I opened the document and wrote two honest sentences." />
-                <button className="primary-btn" style={{ marginTop: 10 }} disabled={postingWin} onClick={() => { void handlePostSocietyWin(); }}>{postingWin ? "Sharing…" : "Post anonymously"}</button>
-                <div className="section-title"><h2>Today in Society</h2><p>{state.societyPosts.length} posts</p></div>
-                {state.societyPosts.map((post) => {
+                <button className="primary-btn" style={{ marginTop: 10 }} disabled={postingWin || societyStatus === "loading"} onClick={() => { void handlePostSocietyWin(); }}>{postingWin ? "Sharing…" : "Post anonymously"}</button>
+                <div className="section-title"><h2>Society feed</h2></div>
+                {societyStatus === "loading" && <p role="status">Loading posts…</p>}
+                {societyStatus === "error" && (
+                  <div className="message-card" role="alert">
+                    <strong>Could not load Society posts.</strong>
+                    <button className="ghost-btn" type="button" disabled={postingWin} onClick={() => {
+                      setSocietyStatus("loading");
+                      setSocietyRetry((attempt) => attempt + 1);
+                    }}>Retry Society</button>
+                  </div>
+                )}
+                {societyStatus === "ready" && state.societyPosts.length === 0 && (
+                  <div className="message-card"><strong>No posts yet.</strong><p>Share a small win to get things started.</p></div>
+                )}
+                {societyStatus !== "loading" && state.societyPosts.map((post) => {
                   const key = String(post.id);
                   const repliesOpen = openRepliesPostId === post.id;
                   return (

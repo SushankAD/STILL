@@ -1,7 +1,7 @@
 import { callProof } from './habit-api'
 import { MAX_PROOF_BYTES, MAX_PROOF_DIMENSION } from '../../supabase/functions/_shared/proof-image'
 
-export type ProofVerificationResult = { verified: boolean; confidence: number; reason: string }
+export type ProofVerificationResult = { verified: boolean; confidence: number; reason: string; verificationId?: string | null }
 
 export type PreparedImage = {
   blob: Blob
@@ -65,6 +65,13 @@ export async function prepareProofImage(file: File): Promise<PreparedImage> {
   }
 }
 
-export function verifyFocusProofWithAI(image: PreparedImage, activity: string): Promise<ProofVerificationResult> {
-  return callProof({ imageBase64: image.base64, mimeType: image.mimeType, activity, context: 'focus' })
+export function verifyFocusProofWithAI(
+  image: PreparedImage, proof: { focusSessionId: string } | { activity: string },
+): Promise<ProofVerificationResult> {
+  return callProof({
+    imageBase64: image.base64,
+    mimeType: image.mimeType,
+    context: 'focus',
+    ...('focusSessionId' in proof ? { action: 'verify', focusSessionId: proof.focusSessionId } : proof),
+  })
 }

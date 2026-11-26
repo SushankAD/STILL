@@ -3,3 +3,22 @@ node_modules/
 outputs/*.png
 outputs/*.zip
 outputs/still-logo-options/
+
+# Local credentials and service state
+.env
+.env.*
+!.env.example
+/web/supabase/.temp/
+/.aws/
+
+# Private planning, release notes, and design originals
+/private/
+/reference/
+/work/
+/final-logo-options-board.png
+/still-logo-stage-*.png
+
+# Local development tools
+/.agents/
+/.codex/
+/skills-lock.json

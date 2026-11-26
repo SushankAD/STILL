@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import ProofPhotoInput from './ProofPhotoInput'
 import {
   deviceTimezone, fetchHabitPolicy, recordHabitCompletion, verifyHabitProof,
 } from './lib/habit-api'
@@ -7,7 +8,7 @@ import {
   allowsSelfReport, DEFAULT_SOCIAL_WINDOW, findTemplate, habitDate,
 } from '../supabase/functions/_shared/habit-policy'
 import { predefinedPolicy } from '../supabase/functions/_shared/habit-predefined'
-import { prepareProofImage, proofImageTypes } from './lib/proof-ai'
+import { prepareProofImage } from './lib/proof-ai'
 import type { PreparedImage } from './lib/proof-ai'
 
 const statusLabels = {
@@ -133,23 +134,6 @@ export default function HabitProof({ habit, userId, onClose, onComplete, onAlrea
     month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC',
   })
 
-  const photoPicker = (capture?: 'environment') => (
-    <label className="ghost-btn proof-picker" aria-disabled={checking || submitting}>
-      {capture ? 'Take photo' : image ? 'Change image' : chooseLabel}
-      <input
-        type="file"
-        accept={proofImageTypes}
-        capture={capture}
-        disabled={checking || submitting}
-        onChange={(event) => {
-          const file = event.currentTarget.files?.[0]
-          event.currentTarget.value = ''
-          if (file) void checkImage(file)
-        }}
-      />
-    </label>
-  )
-
   return (
     <div className="proof-card habit-proof" ref={card}>
       <div className="emoji-badge mint-icon" aria-hidden="true">{habit.icon}</div>
@@ -179,7 +163,8 @@ export default function HabitProof({ habit, userId, onClose, onComplete, onAlrea
       {!userId && <p>Connect a STILL account to verify evidence and earn roots.</p>}
       {userId && acceptsImage && (
         <>
-          <div className="proof-inputs">{photoPicker()}{!reportFirst && photoPicker('environment')}</div>
+          <ProofPhotoInput disabled={checking || submitting} hasImage={Boolean(image)}
+            allowCamera={!reportFirst} chooseLabel={chooseLabel} onSelect={(file) => { void checkImage(file) }} />
           {name && <p className="proof-name">{name}</p>}
           {image && <img className="proof-preview" src={image.dataUrl} alt="Selected habit evidence" />}
           {checking && <p role="status">Checking evidence…</p>}
