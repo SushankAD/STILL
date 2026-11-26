@@ -1,5 +1,5 @@
 const SHELL_CACHE = 'still-shell-v1'
-const ASSET_CACHE = 'still-assets-v1'
+const ASSET_CACHE = 'still-assets-v2'
 const SHELL_URLS = [
   '/',
   '/manifest.webmanifest',
@@ -50,7 +50,8 @@ self.addEventListener('fetch', (event) => {
       if (cached) return cached
 
       const response = await fetch(request)
-      if (response.ok && response.type === 'basic') {
+      const isImage = response.headers.get('content-type')?.startsWith('image/')
+      if (response.ok && response.type === 'basic' && (request.destination !== 'image' || isImage)) {
         await cache.put(request, response.clone())
       }
       return response

@@ -1,14 +1,11 @@
 import { requireSupabase } from './supabase'
+import { currentHabitStreak, DEFAULT_SOCIAL_WINDOW, findTemplate, habitDate, habitRoots, shiftHabitDate } from '../../supabase/functions/_shared/habit-policy'
+import type {
+  CompletionMethod, EvidenceResult, HabitDifficulty, HabitPolicy, SocialWindow, TemplateKey,
+} from '../../supabase/functions/_shared/habit-policy'
+import type { PreparedImage } from './proof-ai'
 
-export type HabitDifficulty = 'easy' | 'medium' | 'hard'
-
-export type HabitDraft = {
-  icon: string
-  title: string
-  area: string
-  difficulty: HabitDifficulty
-  baseRoots: number
-}
+export type HabitDraft = { icon: string; title: string; area: string; difficulty: HabitDifficulty; baseRoots: number }
 
 export type HabitRecord = HabitDraft & {
   id: number | string
@@ -16,172 +13,167 @@ export type HabitRecord = HabitDraft & {
   lastCompletedDay: number | string | null
   lastReward: number
   done: boolean
+  completionId?: string
+  lastMethod?: CompletionMethod
+  timezone?: string
+  policyDateBasis?: HabitPolicy['dateBasis']
+  socialWindow?: SocialWindow
+  activeDate?: string
 }
 
-type Completion = {
+export type HabitCompletion = {
+  id: string
   completed_on: string
   roots_awarded: number
+  verification_method: CompletionMethod
 }
 
-function parseDifficulty(value: string): HabitDifficulty {
-  if (value === 'easy' || value === 'medium' || value === 'hard') return value
-  throw new Error(`Unsupported habit difficulty: ${value}`)
+type HabitRow = {
+  id: string
+  title: string
+  icon: string
+  area: string
+  difficulty: HabitDifficulty
+  verification_timezone: string | null
+  verification_policy: HabitPolicy | null
+  verification_template: TemplateKey | null
+  social_limit_minutes: number
+  social_window_end_hour: number
 }
 
-function localDateString(date: Date): string {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
+export type HabitProofContext = {
+  policy: HabitPolicy
+  timezone: string
+  habitDate: string
+  policyRevision: string
+  template: TemplateKey | null
+  socialWindow: SocialWindow
+  selfReportAllowed: boolean
 }
 
-function shiftDate(dateString: string, days: number): string {
-  const date = new Date(`${dateString}T12:00:00`)
-  date.setDate(date.getDate() + days)
-  return localDateString(date)
+export type HabitProofResult = {
+  result: Pick<EvidenceResult, 'status' | 'userMessage' | 'retryInstruction'>
+  verificationId: string | null
+  method: 'photo' | 'tracked' | null
 }
 
-function countCurrentStreak(completedDates: Set<string>, today: string): number {
-  let date = completedDates.has(today) ? today : shiftDate(today, -1)
-  let streak = 0
+export const completionLabels: Record<CompletionMethod, string> = {
+  legacy: 'Recorded completion',
+  photo: 'Image evidence accepted',
+  tracked: 'Tracked completion',
+  self_report: 'Self-reported completion',
+}
 
-  while (completedDates.has(date)) {
-    streak += 1
-    date = shiftDate(date, -1)
+export const deviceTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+const habitFields = 'id,title,icon,area,difficulty,verification_timezone,verification_policy,verification_template,social_limit_minutes,social_window_end_hour'
+
+export function activeHabitDate(habit: HabitRecord, now: Date, fallback = deviceTimezone()) {
+  return habitDate(now, habit.timezone ?? fallback, findTemplate(habit.title), habit.policyDateBasis, habit.socialWindow?.endHour)
+}
+
+function toHabit(row: HabitRow, completions: HabitCompletion[] = [], now = new Date(), timezone = deviceTimezone()): HabitRecord {
+  const localZone = row.verification_timezone ?? timezone
+  const settings = { limitMinutes: row.social_limit_minutes, endHour: row.social_window_end_hour }
+  const date = habitDate(now, localZone, row.verification_template, row.verification_policy?.dateBasis, settings.endHour)
+  const streak = currentHabitStreak(new Set(completions.map((entry) => entry.completed_on)), date)
+  const entry = completions.find((item) => item.completed_on === date)
+  return {
+    id: row.id,
+    icon: row.icon,
+    title: row.title,
+    area: row.area,
+    difficulty: row.difficulty,
+    baseRoots: habitRoots[row.difficulty],
+    timezone: localZone,
+    policyDateBasis: row.verification_policy?.dateBasis,
+    socialWindow: settings,
+    activeDate: date,
+    streak,
+    lastCompletedDay: entry?.completed_on ?? null,
+    lastReward: entry?.roots_awarded ?? 0,
+    completionId: entry?.id,
+    lastMethod: entry?.verification_method,
+    done: Boolean(entry),
   }
-
-  return streak
 }
 
 export async function fetchHabits(userId: string): Promise<HabitRecord[]> {
   const client = requireSupabase()
-  const today = localDateString(new Date())
-  const firstDate = shiftDate(today, -366)
-
+  const now = new Date()
+  const timezone = deviceTimezone()
+  const firstDate = shiftHabitDate(habitDate(now, timezone, null), -368)
   const [habitsResult, completionsResult] = await Promise.all([
-    client
-      .from('habits')
-      .select('id, title, icon, area, difficulty, base_roots')
-      .eq('user_id', userId)
-      .eq('archived', false)
-      .order('created_at', { ascending: true }),
-    client
-      .from('habit_completions')
-      .select('habit_id, completed_on, roots_awarded')
-      .eq('user_id', userId)
-      .gte('completed_on', firstDate)
-      .order('completed_on', { ascending: false }),
+    client.from('habits').select(habitFields).eq('user_id', userId).eq('archived', false).order('created_at'),
+    client.from('habit_completions').select('id, habit_id, completed_on, roots_awarded, verification_method')
+      .eq('user_id', userId).gte('completed_on', firstDate).order('completed_on', { ascending: false }),
   ])
-
   if (habitsResult.error) throw habitsResult.error
   if (completionsResult.error) throw completionsResult.error
 
-  const completionsByHabit = new Map<string, Completion[]>()
+  const byHabit = new Map<string, HabitCompletion[]>()
   for (const completion of completionsResult.data ?? []) {
-    const records = completionsByHabit.get(completion.habit_id) ?? []
-    records.push(completion)
-    completionsByHabit.set(completion.habit_id, records)
+    const records = byHabit.get(completion.habit_id) ?? []
+    records.push(completion as HabitCompletion)
+    byHabit.set(completion.habit_id, records)
   }
-
-  return (habitsResult.data ?? []).map((habit) => {
-    const completions = completionsByHabit.get(habit.id) ?? []
-    const completedDates = new Set(completions.map((completion) => completion.completed_on))
-    const todayCompletion = completions.find((completion) => completion.completed_on === today)
-
-    return {
-      id: habit.id,
-      icon: habit.icon,
-      title: habit.title,
-      area: habit.area,
-      difficulty: parseDifficulty(habit.difficulty),
-      baseRoots: habit.base_roots,
-      streak: countCurrentStreak(completedDates, today),
-      lastCompletedDay: todayCompletion?.completed_on ?? null,
-      lastReward: todayCompletion?.roots_awarded ?? 0,
-      done: Boolean(todayCompletion),
-    }
-  })
+  return (habitsResult.data ?? []).map((row) => toHabit(row, byHabit.get(row.id), now, timezone))
 }
 
-export async function createHabit(userId: string, habit: HabitDraft): Promise<HabitRecord> {
-  const { data, error } = await requireSupabase()
-    .from('habits')
-    .insert({
-      user_id: userId,
-      title: habit.title,
-      icon: habit.icon,
-      area: habit.area,
-      difficulty: habit.difficulty,
-      base_roots: habit.baseRoots,
-    })
-    .select('id, title, icon, area, difficulty, base_roots')
-    .single()
-
-  if (error) throw error
-  if (!data) throw new Error('STILL could not confirm the habit was saved.')
-
-  return {
-    id: data.id,
-    icon: data.icon,
-    title: data.title,
-    area: data.area,
-    difficulty: parseDifficulty(data.difficulty),
-    baseRoots: data.base_roots,
-    streak: 0,
-    lastCompletedDay: null,
-    lastReward: 0,
-    done: false,
+export async function callProof<T>(body: Record<string, unknown>): Promise<T> {
+  const { data, error } = await requireSupabase().functions.invoke<T>('verify-proof', { body, timeout: 40_000 })
+  if (error?.context instanceof Response) {
+    const details = await error.context.json().catch(() => null)
+    if (typeof details?.error === 'string') throw new Error(details.error)
   }
-}
-
-export async function archiveHabit(userId: string, habitId: string): Promise<void> {
-  const { data, error } = await requireSupabase()
-    .from('habits')
-    .update({ archived: true })
-    .eq('id', habitId)
-    .eq('user_id', userId)
-    .select('id')
-    .single()
-
-  if (error) throw error
-  if (!data) throw new Error('STILL could not confirm the habit was archived.')
-}
-
-export async function recordHabitCompletion(
-  userId: string,
-  habitId: string,
-  rootsAwarded: number,
-): Promise<Completion> {
-  const { data, error } = await requireSupabase()
-    .from('habit_completions')
-    .insert({
-      user_id: userId,
-      habit_id: habitId,
-      completed_on: localDateString(new Date()),
-      roots_awarded: rootsAwarded,
-    })
-    .select('completed_on, roots_awarded')
-    .single()
-
-  if (error?.code === '23505') {
-    throw new Error('This habit is already complete for today.')
-  }
-  if (error) throw error
-  if (!data) throw new Error('STILL could not confirm the habit completion.')
-
+  if (error || !data) throw new Error('Could not reach STILL verification. Please try again.')
   return data
 }
 
-export async function removeTodayHabitCompletion(userId: string, habitId: string): Promise<void> {
-  const { data, error } = await requireSupabase()
-    .from('habit_completions')
-    .delete()
-    .eq('user_id', userId)
-    .eq('habit_id', habitId)
-    .eq('completed_on', localDateString(new Date()))
-    .select('id')
-    .single()
+export async function createHabit(habit: HabitDraft, habitId: string): Promise<HabitRecord> {
+  const { habit: row } = await callProof<{ habit: HabitRow }>({
+    action: 'create', habitId, title: habit.title, icon: habit.icon, difficulty: habit.difficulty, timezone: deviceTimezone(),
+  })
+  return toHabit(row)
+}
 
-  if (error) throw error
-  if (!data) throw new Error('STILL could not confirm the completion was removed.')
+export async function editHabit(habitId: string, title: string, social: SocialWindow = DEFAULT_SOCIAL_WINDOW) {
+  const { habit } = await callProof<{ habit: HabitRow }>({
+    action: 'edit', habitId, title, ...social, timezone: deviceTimezone(),
+  })
+  return toHabit(habit)
+}
+
+export function archiveHabit(habitId: string): Promise<unknown> {
+  return callProof({ action: 'archive', habitId })
+}
+
+const pendingPolicies = new Map<string, Promise<HabitProofContext>>()
+
+export function fetchHabitPolicy(userId: string, habitId: string): Promise<HabitProofContext> {
+  const key = `${userId}:${habitId}`
+  const pending = pendingPolicies.get(key)
+  if (pending) return pending
+  const request = callProof<HabitProofContext>({ action: 'policy', habitId, timezone: deviceTimezone() })
+    .finally(() => pendingPolicies.delete(key))
+  pendingPolicies.set(key, request)
+  return request
+}
+
+export function verifyHabitProof(habitId: string, context: HabitProofContext, image: PreparedImage): Promise<HabitProofResult> {
+  return callProof({
+    action: 'verify', habitId, habitDate: context.habitDate, policyRevision: context.policyRevision, timezone: context.timezone,
+    imageBase64: image.base64, mimeType: image.mimeType,
+  })
+}
+
+export function recordHabitCompletion(habitId: string, context: HabitProofContext, attemptId: string, selfReport: boolean, keepImage?: PreparedImage) {
+  return callProof<{ completion: HabitCompletion; photoSaved?: boolean }>({
+    action: 'complete', habitId, habitDate: context.habitDate, policyRevision: context.policyRevision,
+    attemptId, selfReport,
+    ...(keepImage ? { keepPhoto: true, imageBase64: keepImage.base64, mimeType: keepImage.mimeType } : {}),
+  })
+}
+
+export function removeHabitCompletion(habitId: string, completionId: string) {
+  return callProof<{ storageWarning?: boolean }>({ action: 'undo', habitId, completionId, timezone: deviceTimezone() })
 }

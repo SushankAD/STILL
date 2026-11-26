@@ -166,18 +166,26 @@ export default function AuthGate() {
 
     const client = requireSupabase()
     let active = true
-    const { data: { subscription } } = client.auth.onAuthStateChange((_event, nextSession) => {
+    let activeUserId: string | undefined
+    function receiveSession(nextSession: Session | null) {
       if (!active) return
       setSession(nextSession)
+      const nextUserId = nextSession?.user.id
+      if (nextUserId === activeUserId) return
+
+      activeUserId = nextUserId
       setProfile(null)
       setProfileError('')
       setAuthError('')
+    }
+    const { data: { subscription } } = client.auth.onAuthStateChange((_event, nextSession) => {
+      receiveSession(nextSession)
     })
 
     client.auth.getSession()
       .then(({ data, error }) => {
         if (error) throw error
-        if (active) setSession(data.session)
+        receiveSession(data.session)
       })
       .catch((error: unknown) => {
         if (active) setAuthError(errorMessage(error))
@@ -278,6 +286,7 @@ export default function AuthGate() {
       <StillApp
         key={session.user.id}
         userId={session.user.id}
+        accountCreatedAt={session.user.created_at}
         profileName={profile.display_name}
         onSaveProfileName={(name) => updateProfileName(session.user.id, name)}
         onSignOut={signOut}

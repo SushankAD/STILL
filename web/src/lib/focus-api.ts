@@ -44,7 +44,6 @@ export async function startFocusSession(
       planned_minutes: validMinutes,
       status: 'in_progress',
       roots_awarded: 0,
-      started_at: new Date().toISOString(),
     })
     .select('id, user_id, intention, depth, planned_minutes, status, roots_awarded, started_at, completed_at')
     .single()
@@ -65,13 +64,19 @@ export async function startFocusSession(
   }
 }
 
+async function savedFocusStatus(userId: string, sessionId: string): Promise<FocusStatus | undefined> {
+  const { data, error } = await requireSupabase().from('focus_sessions').select('status')
+    .eq('id', sessionId).eq('user_id', userId).maybeSingle()
+  if (error) throw error
+  return data?.status
+}
+
 export async function completeFocusSession(
   userId: string,
   sessionId: string,
   rootsAwarded: number
-): Promise<void> {
-  const client = requireSupabase()
-  const { error } = await client
+): Promise<boolean> {
+  const { data, error } = await requireSupabase()
     .from('focus_sessions')
     .update({
       status: 'completed',
@@ -80,25 +85,32 @@ export async function completeFocusSession(
     })
     .eq('id', sessionId)
     .eq('user_id', userId)
+    .eq('status', 'in_progress')
+    .select('id')
+    .maybeSingle()
 
   if (error) throw error
+  if (data) return true
+  if (await savedFocusStatus(userId, sessionId) === 'completed') return false
+  throw new Error('This focus session is no longer active.')
 }
 
-export async function abandonFocusSession(
-  userId: string,
-  sessionId: string
-): Promise<void> {
-  const client = requireSupabase()
-  const { error } = await client
+export async function abandonFocusSession(userId: string, sessionId: string): Promise<boolean> {
+  const { data, error } = await requireSupabase()
     .from('focus_sessions')
     .update({
       status: 'abandoned',
+      roots_awarded: 0,
       completed_at: new Date().toISOString(),
     })
     .eq('id', sessionId)
     .eq('user_id', userId)
+    .eq('status', 'in_progress')
+    .select('id')
+    .maybeSingle()
 
   if (error) throw error
+  return Boolean(data) || await savedFocusStatus(userId, sessionId) !== 'completed'
 }
 
 export async function fetchTotalFocusMinutes(userId: string): Promise<number> {

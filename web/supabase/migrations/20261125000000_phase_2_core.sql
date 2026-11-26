@@ -155,7 +155,7 @@ on public.habits for all to authenticated
 using ((select auth.uid()) = user_id)
 with check ((select auth.uid()) = user_id);
 
-create poliicy "Users can manage their habit completions"
+create policy "Users can manage their habit completions"
 on public.habit_completions for all to authenticated
 using ((select auth.uid()) = user_id)
 with check (
