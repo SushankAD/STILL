@@ -147,10 +147,10 @@ const depths = {
   deep: { icon: "🌳", label: "Deep", minutes: 90, roots: 70, copy: "For work that needs real quiet and a little courage." }
 };
 
-const dayStates = {
-  steady: { icon: "🌿", title: "I can focus", copy: "Protect one clean session." },
-  heavy: { icon: "🌙", title: "I feel heavy", copy: "Lower the pressure first." },
-  tiny: { icon: "🌱", title: "I need small steps", copy: "Make the next move visible." }
+const dayStates: Record<DayState, { icon: string; title: string; copy: string; tab: Tab; prompt: string }> = {
+  steady: { icon: "🌿", title: "I can focus", copy: "Protect one clean session.", tab: "focus", prompt: "What would you like to focus on today?" },
+  heavy: { icon: "🌙", title: "I feel heavy", copy: "Lower the pressure first.", tab: "checkin", prompt: "What feels heavy right now?" },
+  tiny: { icon: "🌱", title: "I need small steps", copy: "Make the next move visible.", tab: "habits", prompt: "What is one small step you can take today?" }
 };
 
 function loadState(storageKey: string, accountMode: boolean): State {
@@ -502,7 +502,7 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
     const name = draftName.trim();
     if (!name) return notify("Add your name first.");
     if (!(await persistProfileName(name))) return;
-    const tab: Tab = state.dailyState === "heavy" ? "checkin" : state.dailyState === "tiny" ? "habits" : "home";
+    const tab = dayStates[state.dailyState].tab;
     save({ onboarded: true, tab, userName: name, seedStartedAt: state.seedStartedAt ?? Date.now() });
     notify(`Welcome to STILL, ${name.split(/\s+/)[0]}.`);
   };
@@ -1078,7 +1078,7 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
                     <div className="stat-grid"><div className="stat"><b>{state.roots}</b><small>Roots</small></div><div className="stat"><b>{state.focusMinutes}</b><small>Focus min</small></div><div className="stat"><b>{state.checkins}</b><small>Check-ins</small></div></div>
                   </section>
                 )}
-                <section className="pulse-card"><div><span>{dayStates[state.dailyState].icon}</span><strong>{dayStates[state.dailyState].title}</strong><p>{state.dailyState === "heavy" ? "Start with a check-in. Let the app lower the day before it asks for effort." : state.dailyState === "tiny" ? "Pick one small habit. A visible start is enough." : "You have enough steadiness for one clean focus session."}</p></div><button className="small-btn" onClick={() => setTab(state.dailyState === "heavy" ? "checkin" : state.dailyState === "tiny" ? "habits" : "focus")}>Start</button></section>
+                <section className="pulse-card"><div><span>{dayStates[state.dailyState].icon}</span><strong>{dayStates[state.dailyState].title}</strong><p>{state.dailyState === "heavy" ? "Start with a check-in. Let the app lower the day before it asks for effort." : state.dailyState === "tiny" ? "Pick one small habit. A visible start is enough." : "You have enough steadiness for one clean focus session."}</p></div><button className="small-btn" onClick={() => setTab(dayStates[state.dailyState].tab)}>Start</button></section>
                 <div className="section-title"><h2>What do you need?</h2><p>Choose gently.</p></div>
                 <div className="quick-row">
                   <article className="action-card" onClick={() => setTab("focus")}><div className="emoji-badge mint-icon">🌿</div><strong>Focus when you can</strong><p>One protected session. No full-life reset required.</p></article>
@@ -1098,13 +1098,13 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
                 <div className="check-card"><strong>This decides what STILL asks from you next.</strong><p>Use Check-in when the day feels unclear. Name your state and choose one small next step.</p></div>
                 <div className="section-title"><h2>Today feels like</h2><p>Be honest.</p></div>
                 <div className="state-grid compact">
-                  {(Object.entries(dayStates) as [DayState, typeof dayStates.steady][]).map(([id, item]) => <button key={id} className={`state-chip ${state.dailyState === id ? "selected" : ""}`} onClick={() => save({ dailyState: id })}><span>{item.icon}</span><strong>{item.title}</strong><small>{item.copy}</small></button>)}
+                  {(Object.entries(dayStates) as [DayState, typeof dayStates.steady][]).map(([id, item]) => <button key={id} className={`state-chip ${state.dailyState === id ? "selected" : ""}`} onClick={() => save({ dailyState: id, tab: dayStates[id].tab })}><span>{item.icon}</span><strong>{item.title}</strong><small>{item.copy}</small></button>)}
                 </div>
                 <div className="slider-wrap"><label><span>Mood</span><b>{state.mood}/100</b></label><input type="range" min="0" max="100" value={state.mood} onChange={(event) => save({ mood: Number(event.target.value) })} /></div>
                 <div className="slider-wrap"><label><span>Mental load</span><b>{state.load}/100</b></label><input type="range" min="0" max="100" value={state.load} onChange={(event) => save({ load: Number(event.target.value) })} /></div>
-                <textarea className="textarea" maxLength={2000} placeholder="What feels heavy right now?" value={state.lastReflection} onChange={(event) => save({ lastReflection: event.target.value })} />
+                <textarea className="textarea" maxLength={2000} placeholder={dayStates[state.dailyState].prompt} value={state.lastReflection} onChange={(event) => save({ lastReflection: event.target.value })} />
                 <button className="primary-btn" style={{ marginTop: 12 }} disabled={savingCheckIn} onClick={handleSaveCheckIn}>{savingCheckIn ? "Saving…" : todayCheckedIn ? "Update check-in" : "Save check-in"}</button>
-                <div className="message-card" style={{ marginTop: 12 }}><strong>Suggested next step</strong><p>Make the next move visible. Choose one small action and stay with it for ten quiet minutes.</p></div>
+                <div className="message-card" style={{ marginTop: 12 }}><strong>Suggested next step</strong><p>{dayStates[state.dailyState].copy}</p></div>
               </section>
             ) : state.tab === "habits" ? (
               <section>
