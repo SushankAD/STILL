@@ -4,13 +4,13 @@
   "private": true,
   "description": "STILL — a mobile-first React app for focus, habits, reflection, and quiet progress.",
   "scripts": {
-    "dev": "npm --prefix web run dev",
-    "start": "npm --prefix web run dev",
+    "dev": "npm --prefix web run dev --",
+    "start": "npm --prefix web run dev --",
     "build": "npm --prefix web run build",
-    "preview": "npm --prefix web run preview",
-    "check": "npm --prefix web run build"
-  },
-  "dependencies": {
-    "@supabase/supabase-js": "^2.119.2"
+    "preview": "npm --prefix web run preview --",
+    "test": "npm --prefix web test",
+    "lint": "npm --prefix web run lint",
+    "typecheck": "npm --prefix web run typecheck",
+    "check": "npm test && npm run lint && npm run build"
   }
 }

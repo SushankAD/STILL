@@ -39,7 +39,6 @@ import {
 } from "./lib/society-api";
 import type { ReactionType, SocietyPost } from "./lib/society-api";
 import { fetchUserStats } from "./lib/stats-api";
-import "./still.css";
 
 const HabitProof = lazy(() => import("./HabitProof"));
 
@@ -57,6 +56,7 @@ type State = {
   roots: number;
   seedStartedAt: number | null;
   seedMilestones: SeedMilestones;
+  seventhVisitAt: number | null;
   focusMinutes: number;
   checkins: number;
   theme: "dark" | "normal";
@@ -104,6 +104,7 @@ const defaultState: State = {
   roots: 0,
   seedStartedAt: null,
   seedMilestones: {},
+  seventhVisitAt: null,
   focusMinutes: 0,
   checkins: 0,
   theme: "dark",
@@ -384,7 +385,7 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
     if (!userId) return;
 
     let active = true;
-    void fetchTodayCheckIn(userId).then((checkIn) => {
+    void fetchTodayCheckIn(userId, localDateString()).then((checkIn) => {
       if (!active || !checkIn) return;
       save({
         dailyState: checkIn.dayState,
@@ -447,7 +448,8 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
 
   const accountStart = Date.parse(accountCreatedAt ?? "");
   const seedStart = Number.isFinite(accountStart) ? accountStart : state.seedStartedAt ?? seedClock;
-  const growth = getSeedGrowth(seedStart, state.seedMilestones, seedClock);
+  const growth = getSeedGrowth(seedStart, state.seedMilestones, seedClock,
+    userId ? state.seventhVisitAt : seedStart + 6 * 86_400_000);
   const { stage, next, nextTimeAt } = growth;
   const rootProgress = next ? seedRootsProgress(state.roots, next.roots) : null;
   const pending = habitStatus === "ready" ? state.habits.filter((habit) => !habit.done) : [];
@@ -464,26 +466,20 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
 
     if (userId) {
       try {
-        const saved = await saveCheckInRecord(userId, {
+        const saved = await saveCheckInRecord({
           dayState: state.dailyState,
           mood: state.mood,
           mentalLoad: state.load,
           reflection: state.lastReflection || "",
         });
 
-        const nextCheckins = isUpdate ? state.checkins : state.checkins + 1;
-        const nextRoots = isUpdate ? state.roots : state.roots + 12;
-        save({
-          dailyState: saved.dayState,
-          mood: saved.mood,
-          load: saved.mentalLoad,
-          lastReflection: saved.reflection,
+        save((current) => ({
           lastCheckInDate: saved.checkInDate,
-          checkins: nextCheckins,
-          roots: nextRoots,
-        });
+          checkins: current.checkins + (current.lastCheckInDate === saved.checkInDate ? 0 : 1),
+          roots: current.roots + saved.earned,
+        }));
         refreshStats();
-        notify(isUpdate ? "Check-in updated." : "Check-in saved. +12 roots.");
+        notify(saved.earned ? `Check-in saved. +${saved.earned} roots.` : "Check-in updated.");
       } catch (error) {
         notify(errorMessage(error) || "Could not save check-in.");
       } finally {

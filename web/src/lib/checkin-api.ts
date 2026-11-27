@@ -29,9 +29,8 @@ export function localDateString(date: Date = new Date()): string {
   return `${year}-${month}-${day}`
 }
 
-export async function fetchTodayCheckIn(userId: string): Promise<CheckInRecord | null> {
+export async function fetchTodayCheckIn(userId: string, today: string): Promise<CheckInRecord | null> {
   const client = requireSupabase()
-  const today = localDateString()
 
   const { data, error } = await client
     .from('check_ins')
@@ -54,54 +53,18 @@ export async function fetchTodayCheckIn(userId: string): Promise<CheckInRecord |
   }
 }
 
-export async function fetchCheckInCount(userId: string): Promise<number> {
-  const client = requireSupabase()
-  const { count, error } = await client
-    .from('check_ins')
-    .select('id', { count: 'exact', head: true })
-    .eq('user_id', userId)
-
-  if (error) throw error
-  return count ?? 0
+export function reflectionWords(text: string): number {
+  return text.split(/\s+/u).filter(word => /[\p{L}\p{N}]/u.test(word)).length
 }
 
-export async function saveCheckInRecord(
-  userId: string,
-  draft: CheckInDraft
-): Promise<CheckInRecord> {
-  const client = requireSupabase()
-  const today = localDateString()
-
-  const sanitizedMood = Math.max(0, Math.min(100, Math.round(draft.mood)))
-  const sanitizedLoad = Math.max(0, Math.min(100, Math.round(draft.mentalLoad)))
-  const sanitizedReflection = draft.reflection.slice(0, 2000)
-
-  const { data, error } = await client
-    .from('check_ins')
-    .upsert(
-      {
-        user_id: userId,
-        check_in_date: today,
-        day_state: draft.dayState,
-        mood: sanitizedMood,
-        mental_load: sanitizedLoad,
-        reflection: sanitizedReflection,
-      },
-      { onConflict: 'user_id,check_in_date' }
-    )
-    .select('id, user_id, check_in_date, day_state, mood, mental_load, reflection, created_at')
-    .single()
-
+export async function saveCheckInRecord(draft: CheckInDraft): Promise<{ checkInDate: string; earned: number }> {
+  const { data, error } = await requireSupabase().rpc('save_daily_checkin', {
+    p_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    p_state: draft.dayState,
+    p_mood: draft.mood,
+    p_load: draft.mentalLoad,
+    p_reflection: draft.reflection.trim(),
+  })
   if (error) throw error
-  if (!data) throw new Error('STILL could not save your check-in.')
-
-  return {
-    id: data.id,
-    checkInDate: data.check_in_date,
-    dayState: parseDayState(data.day_state),
-    mood: data.mood,
-    mentalLoad: data.mental_load,
-    reflection: data.reflection,
-    createdAt: data.created_at,
-  }
+  return data
 }

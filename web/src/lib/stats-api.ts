@@ -6,11 +6,11 @@ export type UserStats = {
   roots: number
   focusMinutes: number
   checkins: number
+  seventhVisitAt: number | null
   day: number
   seedMilestones: SeedMilestones
 }
 
-const CHECKIN_ROOTS = 12
 const PAGE_SIZE = 1000
 
 async function readStatsPages<Row extends { id: string }>(
@@ -29,7 +29,7 @@ async function readStatsPages<Row extends { id: string }>(
 export async function fetchUserStats(userId: string): Promise<UserStats> {
   const client = requireSupabase()
 
-  const [habits, focusSessions, checkIns] = await Promise.all([
+  const [habits, focusSessions, checkIns, visit] = await Promise.all([
     readStatsPages((after) => {
       const query = client.from('habit_completions').select('id, roots_awarded, completed_on, created_at')
         .eq('user_id', userId).order('id').limit(PAGE_SIZE)
@@ -41,13 +41,14 @@ export async function fetchUserStats(userId: string): Promise<UserStats> {
       return after ? query.gt('id', after) : query
     }),
     readStatsPages((after) => {
-      const query = client.from('check_ins').select('id, check_in_date, created_at')
+      const query = client.from('check_ins').select('id, roots_awarded, check_in_date, created_at')
         .eq('user_id', userId).order('id').limit(PAGE_SIZE)
       return after ? query.gt('id', after) : query
     }),
+    client.rpc('record_still_visit', { p_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
   ])
 
-  const activeDays = new Set<string>()
+  if (visit.error) throw visit.error
   const credits: RootCredit[] = []
   let roots = 0
   let focusMinutes = 0
@@ -60,25 +61,23 @@ export async function fetchUserStats(userId: string): Promise<UserStats> {
 
   for (const row of habits) {
     recordRoots(row.roots_awarded || 0, row.created_at)
-    if (row.completed_on) activeDays.add(row.completed_on)
   }
 
   for (const row of focusSessions) {
     recordRoots(row.roots_awarded || 0, row.completed_at ?? row.started_at)
     focusMinutes += row.planned_minutes || 0
-    if (row.completed_at) activeDays.add(row.completed_at.slice(0, 10))
   }
 
   for (const row of checkIns) {
-    recordRoots(CHECKIN_ROOTS, row.created_at)
-    if (row.check_in_date) activeDays.add(row.check_in_date)
+    recordRoots(row.roots_awarded, row.created_at)
   }
 
   return {
     roots,
     focusMinutes,
     checkins: checkIns.length,
-    day: Math.max(1, activeDays.size),
+    day: visit.data.day,
+    seventhVisitAt: visit.data.seventhVisitAt ? Date.parse(visit.data.seventhVisitAt) : null,
     seedMilestones: seedMilestonesFromCredits(credits),
   }
 }

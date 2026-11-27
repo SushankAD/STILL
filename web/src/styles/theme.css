@@ -1,0 +1,42 @@
+body.normal-mode .hero-card,
+body.normal-mode .action-card,
+body.normal-mode .society-teaser,
+body.normal-mode .focus-intro,
+body.normal-mode .habit-row,
+body.normal-mode .message-card,
+body.normal-mode .focus-choice,
+body.normal-mode .check-card,
+body.normal-mode .society-hero,
+body.normal-mode .society-post,
+body.normal-mode .settings-card,
+body.normal-mode .mode-choice,
+body.normal-mode .proof-card,
+body.normal-mode .collection-photo,
+body.normal-mode .difficulty-choice,
+body.normal-mode .reaction-btn,
+body.normal-mode .comment,
+body.normal-mode .stat,
+body.normal-mode .ritual-steps div,
+body.normal-mode .state-chip,
+body.normal-mode .template-btn,
+body.normal-mode .input,
+body.normal-mode .textarea {
+  background-color: rgba(255, 255, 255, 0.72);
+}
+
+body.normal-mode .primary-btn {
+  background: #17181c;
+  color: #fffdf8;
+}
+
+body.normal-mode .ghost-btn,
+body.normal-mode .small-btn,
+body.normal-mode .icon-mini-btn,
+body.normal-mode .icon-btn {
+  background: rgba(23, 24, 28, 0.035);
+}
+
+body.normal-mode .toast {
+  background: rgba(255, 253, 248, 0.96);
+  color: var(--text);
+}

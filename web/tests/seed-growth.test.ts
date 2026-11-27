@@ -1,10 +1,22 @@
 import { deepEqual, equal } from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { getSeedGrowth, seedMilestonesFromCredits, seedRootsProgress, seedStages, updateSeedMilestones } from '../src/lib/seed-growth.ts'
+import { getSeedGrowth as calculateGrowth, seedMilestonesFromCredits, seedRootsProgress, seedStages, updateSeedMilestones } from '../src/lib/seed-growth.ts'
 
 const time = (day: string) => Date.parse(day + 'T12:00:00Z')
 const started = time('2026-11-25')
+
+// Existing calendar and roots scenarios assume seven visit days by the end of week one.
+const getSeedGrowth = (start: number, milestones: Parameters<typeof calculateGrowth>[1], now: number) =>
+  calculateGrowth(start, milestones, now, start + 6 * 86_400_000)
+
+test('a gap between visits delays Stage 2 and starts its month on the seventh visit', () => {
+  const roots = { 1000: started, 1800: started }
+  const seventh = time('2027-01-10')
+  equal(calculateGrowth(started, roots, seventh, null).stage.number, 1)
+  equal(calculateGrowth(started, roots, seventh, seventh).stage.number, 2)
+  equal(calculateGrowth(started, roots, seventh, seventh).nextTimeAt, time('2027-02-10'))
+})
 
 test('1,000 roots earned on day four leave Stage 2 locked for the full week', () => {
   const milestones = { 1000: time('2026-11-29') }

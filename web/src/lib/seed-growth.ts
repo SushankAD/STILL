@@ -46,18 +46,19 @@ function afterCalendarMonth(enteredAt: number): number {
   return date.getTime()
 }
 
-export function getSeedGrowth(startedAt: number, milestones: SeedMilestones, now: number) {
+export function getSeedGrowth(startedAt: number, milestones: SeedMilestones, now: number, seventhVisitAt: number | null) {
   let stage: SeedStage = startingStage
   let enteredAt = startedAt
 
   for (const next of laterStages) {
     const nextTimeAt = next.number === 2 ? enteredAt + 7 * 86_400_000 : afterCalendarMonth(enteredAt)
     const pointsAt = milestones[next.roots]
-    if (nextTimeAt > now || pointsAt === undefined || pointsAt > now) {
+    const visitAt = next.number === 2 ? seventhVisitAt : enteredAt
+    if (visitAt === null || visitAt > now || nextTimeAt > now || pointsAt === undefined || pointsAt > now) {
       return { stage, enteredAt, next, nextTimeAt }
     }
     stage = next
-    enteredAt = Math.max(nextTimeAt, pointsAt)
+    enteredAt = Math.max(nextTimeAt, pointsAt, visitAt)
   }
 
   return { stage, enteredAt, next: null, nextTimeAt: null }
