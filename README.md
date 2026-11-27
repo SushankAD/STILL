@@ -2,47 +2,53 @@
 
 STILL is a mobile-first app with focus timers, photo-verified habits, and daily mood check-ins. Earn roots to grow your Seed Drop through five stages, revisit saved proof photos in your Collection, and share small wins anonymously in Society.
 
-## Run the local demo
+## Features
 
-Install the dependencies and start the app from the repository root.
+- Focus timers with photo-based completion verification.
+- Daily habits and mood check-ins.
+- Seed Drop growth across five stages.
+- A Collection for saved proof photos.
+- Anonymous posts and reactions in Society.
+- Light and dark themes.
+
+## Getting started
+
+Requires Node.js 24 or newer and npm. Run these commands from the repository root:
 
 ```sh
 npm ci --prefix web
 npm start
 ```
 
-Open the local URL printed in the terminal. A fresh checkout runs in demo mode and saves progress in that browser.
+Open the local URL printed in the terminal. Without account configuration, STILL runs in demo mode and saves progress in your browser.
 
-## Account features
+## Configuration
 
-Signed-in users can sync progress, keep proof photos in Collection, and share small wins in Society. When you submit a photo for verification, STILL sends it to Google Gemini for review.
+Account syncing and photo verification require a configured backend. Use [`web/.env.example`](web/.env.example) as the template for your local environment configuration.
+
+Photos submitted for verification are sent to Google Gemini for review.
 
 ## Development
 
-STILL uses React, TypeScript, and Vite. Install dependencies in `web/`; the root package only forwards development commands.
+| Command | Purpose |
+| --- | --- |
+| `npm start` | Start the development server |
+| `npm test` | Run local tests |
+| `npm run lint` | Check code quality |
+| `npm run typecheck` | Check TypeScript types |
+| `npm run build` | Create a production build |
+| `npm run preview` | Preview the production build |
+| `npm run check` | Run tests, lint, type checks, and build |
 
-```sh
-npm run check
-```
+These checks run locally and do not deploy the app or update a database.
 
-This runs the tests, lint checks, TypeScript checks, and production build. Use `npm test`, `npm run lint`, `npm run typecheck`, or `npm run build` to run a check separately. `npm run preview` serves the production build locally.
+## Project structure
 
-## Source layout
+- `web/src/` — React components, styles, and application logic.
+- `web/public/` — Images, app icons, and other static assets.
+- `web/tests/` — Application tests.
+- `web/supabase/` — Database migrations and backend functions.
 
-- `web/src/main.tsx`: application entry point and global stylesheet import.
-- `web/src/AuthGate.tsx`: account screens and session handling.
-- `web/src/App.tsx`: application state, navigation, and main screens.
-- `web/src/HabitProof.tsx`, `ProofPhotoInput.tsx`, and `CollectionImage.tsx`: evidence and photo components.
-- `web/src/styles/`: base and account styles, Home, shared controls, habits, Focus, other screens, light theme overrides, and navigation. `index.css` sets their load order.
-- `web/src/lib/`: API clients, timer, audio, and growth calculations.
-- `web/public/`: app icons, five growth-stage images, manifest, and service worker. Public assets are copied into every build; keep only files used by the app.
-- `web/tests/`: runnable app and verification tests.
-- `web/supabase/`: database migrations, SQL checks, and proof verification functions. Shared habit policies are also imported by the frontend.
+## Built with
 
-Keep feature styles in the matching stylesheet and shared controls in `components.css`. Preserve selector specificity and import order when moving rules. Historical prototypes and local design exports belong outside the active app; `outputs/`, `reference/`, and `private/` are ignored.
-
-## Connected development
-
-Copy `web/.env.example` to `web/.env.local` and supply the project's public Supabase URL and publishable or anon key to enable account features. Keep service credentials out of frontend environment variables. The proof verification function uses `GEMINI_API_KEY` configured as a Supabase function secret.
-
-Apply the project's migrations and deploy its functions through the backend workflow before testing account features. `npm run check` runs local tests and builds the frontend; it does not apply migrations, deploy functions, or run the SQL checks against a database.
+React, TypeScript, Vite, and Supabase.
