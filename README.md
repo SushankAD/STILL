@@ -1,6 +1,6 @@
 # STILL
 
-STILL is a mobile-first app for focus sessions, daily habits, and personal check-ins. Completed activities earn roots that help a Seed Drop grow over time.
+STILL is a mobile-first app with focus timers, photo-verified habits, and daily mood check-ins. Earn roots to grow your Seed Drop through five stages, revisit saved proof photos in your Collection, and share small wins anonymously in Society.
 
 ## Run the local demo
 
