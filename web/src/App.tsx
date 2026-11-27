@@ -162,6 +162,7 @@ function loadState(storageKey: string, accountMode: boolean): State {
     return {
       ...initialState,
       ...saved,
+      tab: "home",
       seedStartedAt,
       seedMilestones: accountMode ? saved.seedMilestones ?? {}
         : updateSeedMilestones(saved.seedMilestones ?? {}, saved.roots ?? 0, seedStartedAt ?? Date.now()),
