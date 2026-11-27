@@ -121,6 +121,8 @@ h1 {
 .phone-wrap {
   display: flex;
   justify-content: center;
+  width: 100%;
+  min-width: 0;
 }
 
 .phone {
