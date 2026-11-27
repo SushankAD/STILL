@@ -48,7 +48,4 @@ These checks run locally and do not deploy the app or update a database.
 - `web/public/` — Images, app icons, and other static assets.
 - `web/tests/` — Application tests.
 - `web/supabase/` — Database migrations and backend functions.
-
-## Built with
-
-React, TypeScript, Vite, and Supabase.
+  
