@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { refreshCollectionImageUrl } from './lib/proof-api'
 import type { CollectionPhoto } from './lib/proof-api'
 
-export default function CollectionImage({ photo }: { photo: CollectionPhoto }) {
+export default function CollectionImage({ photo, thumbnail = false }: { photo: CollectionPhoto; thumbnail?: boolean }) {
   const [imageUrl, setImageUrl] = useState(photo.imageUrl)
   const [status, setStatus] = useState<'ready' | 'loading' | 'unavailable'>(photo.imageUrl ? 'ready' : 'unavailable')
   const attemptedRefresh = useRef(false)
@@ -27,6 +27,8 @@ export default function CollectionImage({ photo }: { photo: CollectionPhoto }) {
       }} />
     )
   }
+
+  if (thumbnail) return <span className="collection-thumbnail-placeholder">{status === 'loading' ? '…' : 'Photo'}</span>
 
   return (
     <div className="collection-photo-placeholder">

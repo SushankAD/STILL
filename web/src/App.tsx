@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import CollectionImage from "./CollectionImage";
+import Collection from "./Collection";
 import ProofPhotoInput from "./ProofPhotoInput";
 import { playCompletionRingtone, unlockAudio } from "./lib/chime";
 import { expireFocusCountdown, focusSecondsLeft, isFocusProofReady } from "./lib/focus-timer";
@@ -344,21 +344,36 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
   }, [refreshCollection, state.tab, userId]);
 
   useEffect(() => {
-    if (!userId) return;
+    if (!userId || state.tab !== "society") return;
 
     let active = true;
-    fetchSocietyPosts().then((societyPosts) => {
-      if (!active) return;
-      save({ societyPosts });
-      setSocietyStatus("ready");
-    }).catch(() => {
-      if (active) setSocietyStatus("error");
-    });
+    let version = 0;
+    const refresh = () => {
+      const request = ++version;
+      setSocietyStatus("loading");
+      void fetchSocietyPosts().then((societyPosts) => {
+        if (!active || request !== version) return;
+        save({ societyPosts });
+        setSocietyStatus("ready");
+      }).catch(() => {
+        if (active && request === version) setSocietyStatus("error");
+      });
+    };
+    const refreshVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    refresh();
+    document.addEventListener("visibilitychange", refreshVisible);
+    window.addEventListener("focus", refreshVisible);
+    window.addEventListener("online", refreshVisible);
 
     return () => {
       active = false;
+      document.removeEventListener("visibilitychange", refreshVisible);
+      window.removeEventListener("focus", refreshVisible);
+      window.removeEventListener("online", refreshVisible);
     };
-  }, [userId, save, societyRetry]);
+  }, [userId, save, societyRetry, state.tab]);
 
   useEffect(() => {
     if (!userId) return;
@@ -1339,32 +1354,11 @@ function StillApp({ userId, accountCreatedAt, profileName, demoMode = false, onS
               </section>
             ) : (
               <section>
-                <div className="section-title" style={{ marginTop: 0 }}><h2>Collection</h2><p>{state.collectionPhotos.length} {state.collectionPhotos.length === 1 ? "proof" : "proofs"}</p></div>
-                {collectionStatus === "error" && (
-                  <div className="message-card" role="alert">
-                    <strong>Could not refresh Collection.</strong>
-                    <button className="ghost-btn" type="button" onClick={() => {
-                      setCollectionStatus("loading");
-                      refreshCollection();
-                    }}>Retry Collection</button>
-                  </div>
-                )}
-                {state.collectionPhotos.length === 0 ? (
-                  collectionStatus === "loading" ? <p role="status">Loading photos…</p> :
-                    collectionStatus === "ready" && <div className="message-card"><strong>Nothing collected yet.</strong><p>Save accepted habit photos or focus proof to see them here.</p></div>
-                ) : (
-                  <div className="collection-grid">
-                    {state.collectionPhotos.map((photo) => (
-                      <article className="collection-photo" key={photo.id}>
-                        <CollectionImage key={photo.imageUrl} photo={photo} />
-                        <div>
-                          <strong>{photo.label}</strong>
-                          <span>{photo.kind === "focus" ? "Focus" : "Habit"} · {new Date(photo.createdAt).toLocaleDateString()}</span>
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                )}
+                <Collection photos={state.collectionPhotos} userId={userId} status={collectionStatus}
+                  onRetry={() => {
+                    setCollectionStatus("loading");
+                    refreshCollection();
+                  }} />
               </section>
             )}
           </div>

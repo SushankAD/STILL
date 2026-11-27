@@ -1,4 +1,5 @@
 import { requireSupabase } from './supabase'
+import { calendarMonthBounds } from './calendar'
 import type { PreparedImage } from './proof-ai'
 
 export type ProofPhotoSource =
@@ -104,26 +105,30 @@ function extractLabel(row: ProofRow): { label: string; kind: 'focus' | 'habit' }
   }
 }
 
-export async function fetchCollectionPhotos(userId: string): Promise<CollectionPhoto[]> {
+export async function fetchCollectionPhotos(userId: string, month?: Date): Promise<CollectionPhoto[]> {
   const client = requireSupabase()
 
-  const { data, error } = await client
-    .from('proof_photos')
-    .select(`
-      id,
-      object_path,
-      focus_session_id,
-      habit_completion_id,
-      created_at,
-      focus_sessions ( intention ),
-      habit_completions ( habits ( title, icon ) )
-    `)
-    .eq('user_id', userId)
-    .order('created_at', { ascending: false })
-    .limit(60)
-
-  if (error) throw error
-  const rows = (data ?? []) as unknown as ProofRow[]
+  const rows: ProofRow[] = []
+  const bounds = month ? calendarMonthBounds(month) : null
+  const pageSize = month ? 1000 : 60
+  for (;;) {
+    let query = client.from('proof_photos')
+      .select(`
+        id, object_path, focus_session_id, habit_completion_id, created_at,
+        focus_sessions ( intention ),
+        habit_completions ( habits ( title, icon ) )
+      `)
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
+      .range(rows.length, rows.length + pageSize - 1)
+    if (bounds) query = query.gte('created_at', bounds.start).lt('created_at', bounds.end)
+    const { data, error } = await query
+    if (error) throw error
+    const page = (data ?? []) as unknown as ProofRow[]
+    rows.push(...page)
+    if (!month || page.length < pageSize) break
+  }
   if (rows.length === 0) return []
 
   const paths = rows.map((row) => row.object_path)
